@@ -112,4 +112,3 @@ Files
 - `gpx_uploader.py` — Main application (GUI, Playwright automation, Strava helpers)
 - `requirements.txt` — Python dependencies (playwright, tkinterdnd2, pyinstaller)
 - `build.bat` — One-click build script to install deps and create the EXE
-- `XDA_Tools.spec` — PyInstaller spec used to package the application
