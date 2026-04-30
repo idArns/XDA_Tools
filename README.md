@@ -1,55 +1,119 @@
-XDA_Tools.EXE IS LOCATED IN "dist/XDA_Tools". IT IS ALREADY BUILT, YOU DO NOT HAVE TO BUILD IT AGAIN!!!
+# XDA_Tools — GPX → Google My Maps (Batch Uploader)
 
-# GPX → Google My Maps  —  Batch Uploader
+A small GUI utility that uploads one or more GPX files to Google My Maps by
+automating a Chromium browser with Playwright. Each GPX becomes its own map,
+named after the file.
 
-Drag GPX files onto the window and upload them all to Google My Maps in one go.
-Each file becomes its own map, named after the filename.
-
----
-
-## One-time build  (needs Python installed once, then never again)
-
-1. Install Python 3.11+ from https://www.python.org/downloads/
-   ✔  Tick **"Add Python to PATH"** during install.
-
-2. Double-click **build.bat**
-   - Installs dependencies automatically
-   - Downloads Playwright's Chromium (~150 MB, once)
-   - Packages everything into `dist\XDA_Tools\`
-
-3. The result is `dist\XDA_Tools\XDA_Tools.exe`
-   You can zip that whole folder and share/move it freely.
-   No Python needed on the target machine.
+Table of contents
+- About
+- Features
+- Requirements
+- One-time build (Windows)
+- Usage
+- Strava integration
+- Troubleshooting
+- Files
 
 ---
 
-## Usage
+About
 
-1. Launch `XDA_Tools.exe`
-2. Drag `.gpx` files onto the drop zone, or click to browse
-3. Click **▶ Upload to My Maps**
-4. A Chromium browser opens — **sign into Google** if prompted (first run)
-5. The script creates one new My Maps map per file, named after the filename
-6. Watch the log panel for progress; browser stays open when done
+This app uses a simple Tkinter GUI for drag-and-drop and Playwright for
+browser automation. Because Google My Maps has no public API, the tool drives
+Chromium to create maps and import GPX files in the web UI.
 
----
+Features
 
-## Notes
+- Drag & drop GPX files (or browse) and upload them in batch
+- Creates one My Maps map per GPX file and renames maps automatically
+- Built-in logging panel to monitor progress
+- Optional Strava helpers / time-bucketing utilities included in the code
 
-- Google My Maps has no official API, so this uses browser automation.
-  The UI is driven by Playwright controlling a real Chromium window.
-- You stay in control — your Google credentials never leave your machine.
-- If My Maps changes its UI, the selectors in `gpx_uploader.py` may need
-  updating (look for the `_rename_map` and `_import_gpx` functions).
-- Large GPX files may take longer to import; the script waits up to 60 s
-  per file before moving on.
+Requirements
 
----
+- Windows (packaged as an .exe in dist/)
+- Python 3.11+ (only needed to build; not required to run the packaged exe)
+- Python packages: playwright, tkinterdnd2, pyinstaller (see requirements.txt)
 
-## Files
+One-time build (Windows)
 
-| File | Purpose |
-|------|---------|
-| `gpx_uploader.py` | Main application (GUI + automation) |
-| `requirements.txt` | Python dependencies |
-| `build.bat` | One-click build script |
+1. Install Python 3.11+ and enable "Add Python to PATH".
+2. Run `build.bat` (double-click or from PowerShell).
+   - Installs Python deps and Playwright browsers (Chromium).
+   - Packages the app with PyInstaller into `dist\XDA_Tools\`.
+3. The packaged application is `dist\XDA_Tools\XDA_Tools.exe`.
+   Note: A prebuilt release may be available in the repository Releases — you
+   do not have to build locally if you prefer the release bundle.
+
+Usage (Maps upload, Strava, and Time Buckets)
+
+Modes
+
+- Local-file mode: choose one or more .gpx files (drag & drop or Browse) and
+  upload them; one My Maps map is created per file.
+- Date-top mode: set the date control at the top of the Maps Upload tab and
+  click Upload without selecting files. The app will create maps/activities
+  for that date (useful when timestamps or logs are provided separately).
+
+Quick steps — Local-file mode
+
+1. Launch `XDA_Tools.exe` (or run `gpx_uploader.py`).
+2. Add GPX files (drag & drop or Browse).
+3. (Optional) Configure time buckets or other options in the Maps Upload tab.
+4. Click "Upload to My Maps" and sign into Google in the opened Chromium window
+   if prompted.
+5. Watch the log panel for progress; the browser stays open when done.
+
+Quick steps — Date-top mode (no local files)
+
+1. Launch the app and open the Maps Upload tab.
+2. Set the date control at the top to the desired date.
+3. (Optional) Provide time-bucketing timestamps (see below) or import logs.
+4. Click "Upload to My Maps" — the app will act using the configured date.
+
+Time bucketing (timestamps)
+
+- Manual entry: type timestamps directly into the time-bucketing textbox. The
+  field accepts one timestamp per line or comma-separated values.
+- Import from file: load a timestamp file (plain text or CSV with one value per
+  line) to populate the time buckets.
+
+Notes on formats: accept common ISO-like timestamps (e.g. `2026-04-30T08:15:00`) 
+or simple time-only entries (e.g. `08:15`) when a date is provided on the
+Maps Upload tab. If unsure, import timestamps from a file to avoid parsing
+ambiguities.
+
+Logs and imports
+
+- Logs can only be imported from a file via the Logs Import control — they
+  cannot be pasted or typed into the logs import UI.
+- Timestamp files and logs are separate: timestamp files populate time buckets;
+  imported logs are used for diagnostic or recovery purposes.
+
+Strava integration
+
+- The app includes Strava OAuth/token helpers and token refresh support.
+- To enable Strava features, provide your Strava client ID and secret or save
+  them to `~/.gpxtools_strava.json` (the app will read and persist tokens there).
+- See `gpx_uploader.py` for the OAuth flow, token refresh behavior, and the
+  functions that integrate Strava data with time-bucketing.
+
+If you want, add an example timestamp file or a sample log file to the repo to
+clarify expected formats.Troubleshooting & notes
+
+- This tool performs UI automation. If Google My Maps changes, imports may
+  fail. Search for `_rename_map` and `_import_gpx` in `gpx_uploader.py` to
+  update selectors.
+- The script waits up to ~60 seconds per file for the import; large files may
+  take longer.
+- The output folder is next to the exe and is named `out` when packaging
+  with the provided build script.
+- Your Google credentials are used only in the local browser session —
+  nothing is sent to external servers by this script.
+
+Files
+
+- `gpx_uploader.py` — Main application (GUI, Playwright automation, Strava helpers)
+- `requirements.txt` — Python dependencies (playwright, tkinterdnd2, pyinstaller)
+- `build.bat` — One-click build script to install deps and create the EXE
+- `XDA_Tools.spec` — PyInstaller spec used to package the application
