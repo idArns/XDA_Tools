@@ -84,9 +84,7 @@ ambiguities.
 Logs and imports
 
 - Logs can only be imported from a file via the Logs Import control — they
-  cannot be pasted or typed into the logs import UI.
-- Timestamp files and logs are separate: timestamp files populate time buckets;
-  imported logs are used for diagnostic or recovery purposes.
+  cannot be pasted or typed into the GUI line by line like timestamps.
 
 Strava integration
 
