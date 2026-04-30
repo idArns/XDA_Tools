@@ -1,8 +1,8 @@
-# XDA_Tools — GPX → Google My Maps (Batch Uploader)
+# XDA_Tools
 
 A small GUI utility that uploads one or more GPX files to Google My Maps by
 automating a Chromium browser with Playwright. Each GPX becomes its own map,
-named after the file.
+named after the file. There is also a timebucketing feature to group tags to their corresponding test.
 
 Table of contents
 - About
@@ -59,17 +59,15 @@ Quick steps — Local-file mode
 
 1. Launch `XDA_Tools.exe` (or run `gpx_uploader.py`).
 2. Add GPX files (drag & drop or Browse).
-3. (Optional) Configure time buckets or other options in the Maps Upload tab.
-4. Click "Upload to My Maps" and sign into Google in the opened Chromium window
+3. Click "Upload to My Maps" and sign into Google in the opened Chromium window
    if prompted.
-5. Watch the log panel for progress; the browser stays open when done.
+4. Watch the log panel for progress; the browser stays open when done.
 
 Quick steps — Date-top mode (no local files)
 
 1. Launch the app and open the Maps Upload tab.
 2. Set the date control at the top to the desired date.
-3. (Optional) Provide time-bucketing timestamps (see below) or import logs.
-4. Click "Upload to My Maps" — the app will act using the configured date.
+3. Click "Upload to My Maps" — the app will act using the configured date.
 
 Time bucketing (timestamps)
 
