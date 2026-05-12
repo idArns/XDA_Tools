@@ -444,7 +444,7 @@ def _get_route_geo_info(gpx_path: Path, log=print):
     if start_pt:
         start_addr, start_town = _reverse_geocode(start_pt[0], start_pt[1], log)
         start_link = _google_maps_link(start_pt[0], start_pt[1])
-        start_cell = f"{start_link} | {start_addr}"
+        start_cell = f"{start_addr} | {start_link}"
         time.sleep(1)  # Nominatim rate limit
     else:
         start_town = ""
@@ -452,7 +452,7 @@ def _get_route_geo_info(gpx_path: Path, log=print):
     if end_pt:
         end_addr, end_town = _reverse_geocode(end_pt[0], end_pt[1], log)
         end_link = _google_maps_link(end_pt[0], end_pt[1])
-        end_cell = f"{end_link} | {end_addr}"
+        end_cell = f"{end_addr} | {end_link}"
     else:
         end_town = ""
 
