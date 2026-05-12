@@ -455,7 +455,7 @@ def _init_share_output_file(output_dir: Path, export_format: str) -> Path:
     headers = ["Map Name", "Share URL", "Start Position", "End Position", "City"]
     if export_format == "csv":
         with share_output.open("w", encoding="utf-8", newline="") as fh:
-            csv.writer(fh).writerow(headers)
+            csv.writer(fh, quoting=csv.QUOTE_ALL).writerow(headers)
     else:
         share_output.write_text("\t".join(headers) + "\n", encoding="utf-8")
     return share_output
@@ -499,7 +499,7 @@ def _append_share_output_row(output_file: Path, export_format: str, map_name: st
     export_format = export_format.lower()
     if export_format == "csv":
         with output_file.open("a", encoding="utf-8", newline="") as fh:
-            csv.writer(fh).writerow([map_name, share_url, start_pos, end_pos, city])
+            csv.writer(fh, quoting=csv.QUOTE_ALL).writerow([map_name, share_url, start_pos, end_pos, city])
     else:
         with output_file.open("a", encoding="utf-8") as fh:
             fh.write(f"{map_name}\t{share_url}\t{start_pos}\t{end_pos}\t{city}\n")
