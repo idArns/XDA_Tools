@@ -384,8 +384,9 @@ def _plus_code(lat, lon, town=""):
     try:
         from openlocationcode import openlocationcode as olc
         full = olc.encode(lat, lon)
-        # Short code: last 4+2 chars (e.g. "FFGQ+M7V") + town name
-        short = full[-8:] if len(full) >= 8 else full
+        # Short code: 4 chars before '+' through end (e.g. "FFGQ+M7V")
+        idx = full.index('+')
+        short = full[idx - 4:]
         return f"{short} {town}".strip() if town else short
     except Exception:
         return ""
@@ -420,10 +421,10 @@ def _reverse_geocode(lat, lon, log=print):
 
         if house_no:
             street_full = f"{road} {house_no}".strip()
+            formatted = ", ".join(filter(None, [street_full, town, county, country]))
         else:
-            street_full = f"{road} ({_plus_code(lat, lon, town)})".strip()
-
-        formatted   = ", ".join(filter(None, [street_full, town, county, country]))
+            # No house number — use Plus Code as the full address
+            formatted = ", ".join(filter(None, [_plus_code(lat, lon, town), county, country]))
         return formatted, town
     except Exception as e:
         log(f"  ⚠️  Reverse geocode failed ({lat},{lon}): {e}")
