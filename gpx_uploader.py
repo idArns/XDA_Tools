@@ -353,14 +353,111 @@ def _safe_filename(value):
     return value or "untitled"
 
 
+def _parse_gpx_endpoints(gpx_path: Path):
+    """
+    Extract the first and last (lat, lon) trackpoints from a GPX file.
+    Returns ((start_lat, start_lon), (end_lat, end_lon)) or (None, None) on failure.
+    """
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(str(gpx_path))
+        root = tree.getroot()
+        # Handle namespace
+        ns = ""
+        if root.tag.startswith("{"):
+            ns = root.tag.split("}")[0] + "}"
+        points = root.findall(f".//{ns}trkpt")
+        if not points:
+            return None, None
+        def _pt(el):
+            return (float(el.attrib["lat"]), float(el.attrib["lon"]))
+        return _pt(points[0]), _pt(points[-1])
+    except Exception:
+        return None, None
+
+
+def _google_maps_link(lat, lon):
+    return f"https://www.google.com/maps?q={lat},{lon}"
+
+
+def _reverse_geocode(lat, lon, log=print):
+    """
+    Reverse geocode a lat/lon pair using Nominatim (OpenStreetMap).
+    Returns (formatted_address, town) tuple. Both may be empty strings on failure.
+    """
+    try:
+        url = (
+            f"https://nominatim.openstreetmap.org/reverse"
+            f"?lat={lat}&lon={lon}&format=json&zoom=18"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "XDATools/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        addr = data.get("address", {})
+        road        = addr.get("road", "")
+        house_no    = addr.get("house_number", "")
+        town        = (addr.get("city")
+                    or addr.get("town")
+                    or addr.get("village")
+                    or addr.get("municipality")
+                    or "")
+        county      = (addr.get("county")
+                    or addr.get("state")
+                    or addr.get("region")
+                    or "")
+        country     = addr.get("country", "")
+        street_full = f"{road} {house_no}".strip()
+        formatted   = ", ".join(filter(None, [street_full, town, county, country]))
+        return formatted, town
+    except Exception as e:
+        log(f"  ⚠️  Reverse geocode failed ({lat},{lon}): {e}")
+        return "", ""
+
+
+def _get_route_geo_info(gpx_path: Path, log=print):
+    """
+    For a GPX file, return start/end position strings and city column value.
+    Each position string is: google maps link + newline + address.
+    City is "StartTown - EndTown" or just "Town" if both are the same.
+    """
+    start_pt, end_pt = _parse_gpx_endpoints(gpx_path)
+
+    start_cell, end_cell, city = "", "", ""
+
+    if start_pt:
+        start_addr, start_town = _reverse_geocode(start_pt[0], start_pt[1], log)
+        start_link = _google_maps_link(start_pt[0], start_pt[1])
+        start_cell = f"{start_link}\n{start_addr}"
+        time.sleep(1)  # Nominatim rate limit
+    else:
+        start_town = ""
+
+    if end_pt:
+        end_addr, end_town = _reverse_geocode(end_pt[0], end_pt[1], log)
+        end_link = _google_maps_link(end_pt[0], end_pt[1])
+        end_cell = f"{end_link}\n{end_addr}"
+    else:
+        end_town = ""
+
+    if start_town and end_town:
+        city = start_town if start_town == end_town else f"{start_town} - {end_town}"
+    elif start_town:
+        city = start_town
+    elif end_town:
+        city = end_town
+
+    return start_cell, end_cell, city
+
+
 def _init_share_output_file(output_dir: Path, export_format: str) -> Path:
     export_format = export_format.lower()
     share_output = output_dir / f"mymaps_share_links_{datetime.now():%Y%m%d_%H%M%S}.{export_format}"
+    headers = ["Map Name", "Share URL", "Start Position", "End Position", "City"]
     if export_format == "csv":
         with share_output.open("w", encoding="utf-8", newline="") as fh:
-            csv.writer(fh).writerow(["Map Name", "Share URL"])
+            csv.writer(fh).writerow(headers)
     else:
-        share_output.write_text("Map Name\tShare URL\n", encoding="utf-8")
+        share_output.write_text("\t".join(headers) + "\n", encoding="utf-8")
     return share_output
 
 def _open_links_from_file(file_path: Path, log=print):
@@ -397,14 +494,15 @@ def _open_links_from_file(file_path: Path, log=print):
         webbrowser.open_new_tab(url)
 
 
-def _append_share_output_row(output_file: Path, export_format: str, map_name: str, share_url: str):
+def _append_share_output_row(output_file: Path, export_format: str, map_name: str, share_url: str,
+                             start_pos: str = "", end_pos: str = "", city: str = ""):
     export_format = export_format.lower()
     if export_format == "csv":
         with output_file.open("a", encoding="utf-8", newline="") as fh:
-            csv.writer(fh).writerow([map_name, share_url])
+            csv.writer(fh).writerow([map_name, share_url, start_pos, end_pos, city])
     else:
         with output_file.open("a", encoding="utf-8") as fh:
-            fh.write(f"{map_name}\t{share_url}\n")
+            fh.write(f"{map_name}\t{share_url}\t{start_pos}\t{end_pos}\t{city}\n")
 
 
 def _find_first_visible_locator(page, selectors, timeout_ms=8_000):
@@ -514,7 +612,8 @@ def _capture_map_screenshot(page, output_dir, map_name, log):
     return screenshot_path
 
 
-def _save_share_link(page, output_file, map_name, log, export_format="csv", timeout_ms=20_000):
+def _save_share_link(page, output_file, map_name, log, export_format="csv", timeout_ms=20_000,
+                     start_pos="", end_pos="", city=""):
     share_selectors = (
         "button:has-text('Share')",
         "button:has-text('Megosztás')",
@@ -568,7 +667,8 @@ def _save_share_link(page, output_file, map_name, log, export_format="csv", time
     if not share_url.startswith("http"):
         raise RuntimeError(f"Share dialog opened, but the link field was empty: {share_url!r}")
 
-    _append_share_output_row(output_file, export_format, map_name, share_url)
+    _append_share_output_row(output_file, export_format, map_name, share_url,
+                             start_pos=start_pos, end_pos=end_pos, city=city)
     log(f"  🔗  Saved share link to {output_file.name}")
 
     try:
@@ -896,10 +996,20 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     except Exception as e:
                         log(f"  ⚠️  Screenshot capture failed: {e}")
 
+                    # ── Step 10b: Reverse geocode start/end points ─────────
+                    log("  🌍  Looking up start/end addresses…")
+                    try:
+                        start_pos, end_pos, city = _get_route_geo_info(gpx_path, log)
+                        log(f"  📍  City: {city or '(unknown)'}")
+                    except Exception as e:
+                        log(f"  ⚠️  Geo lookup failed: {e}")
+                        start_pos, end_pos, city = "", "", ""
+
                     # ── Step 11: Save share link ───────────────────────────
                     log("  🔗  Saving share link…")
                     try:
-                        _save_share_link(page, share_output, map_name, log, share_export_format)
+                        _save_share_link(page, share_output, map_name, log, share_export_format,
+                                         start_pos=start_pos, end_pos=end_pos, city=city)
                     except Exception as e:
                         log(f"  ⚠️  Share link export failed: {e}")
 
