@@ -380,6 +380,14 @@ def _google_maps_link(lat, lon):
     return f"https://www.google.com/maps?q={lat},{lon}"
 
 
+def _plus_code(lat, lon):
+    try:
+        from openlocationcode import openlocationcode as olc
+        return olc.encode(lat, lon)
+    except Exception:
+        return ""
+
+
 def _reverse_geocode(lat, lon, log=print):
     """
     Reverse geocode a lat/lon pair using Nominatim (OpenStreetMap).
@@ -406,7 +414,13 @@ def _reverse_geocode(lat, lon, log=print):
                     or addr.get("region")
                     or "")
         country     = addr.get("country", "")
-        street_full = f"{road} {house_no}".strip()
+
+        if house_no:
+            street_full = f"{road} {house_no}".strip()
+        else:
+            # No house number — append Plus Code for precise location
+            street_full = f"{road} ({_plus_code(lat, lon)})".strip()
+
         formatted   = ", ".join(filter(None, [street_full, town, county, country]))
         return formatted, town
     except Exception as e:
@@ -462,22 +476,28 @@ def _init_share_output_file(output_dir: Path, export_format: str) -> Path:
 
 def _open_links_from_file(file_path: Path, log=print):
     try:
-        lines = file_path.read_text(encoding="utf-8").splitlines()
+        if file_path.suffix.lower() == ".csv":
+            with file_path.open("r", encoding="utf-8", newline="") as fh:
+                reader = csv.reader(fh)
+                next(reader, None)  # skip header
+                links = []
+                for row in reader:
+                    if len(row) >= 2:
+                        url = row[1].strip()
+                        if url.startswith("http"):
+                            links.append(url)
+        else:
+            lines = file_path.read_text(encoding="utf-8").splitlines()
+            links = []
+            for line in lines[1:]:
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    url = parts[1].strip()
+                    if url.startswith("http"):
+                        links.append(url)
     except Exception as e:
         log(f"⚠️  Could not read links file: {e}")
         return
-
-    links = []
-    for line in lines[1:]:  # skip header
-        if file_path.suffix.lower() == ".csv":
-            parts = line.split(",")
-        else:
-            parts = line.split("\t")
-
-        if len(parts) >= 2:
-            url = parts[1].strip()
-            if url.startswith("http"):
-                links.append(url)
 
     if not links:
         log("⚠️  No links found to open.")
