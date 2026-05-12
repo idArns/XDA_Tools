@@ -380,10 +380,13 @@ def _google_maps_link(lat, lon):
     return f"https://www.google.com/maps?q={lat},{lon}"
 
 
-def _plus_code(lat, lon):
+def _plus_code(lat, lon, town=""):
     try:
         from openlocationcode import openlocationcode as olc
-        return olc.encode(lat, lon)
+        full = olc.encode(lat, lon)
+        # Short code: last 4+2 chars (e.g. "FFGQ+M7V") + town name
+        short = full[-8:] if len(full) >= 8 else full
+        return f"{short} {town}".strip() if town else short
     except Exception:
         return ""
 
@@ -418,8 +421,7 @@ def _reverse_geocode(lat, lon, log=print):
         if house_no:
             street_full = f"{road} {house_no}".strip()
         else:
-            # No house number — append Plus Code for precise location
-            street_full = f"{road} ({_plus_code(lat, lon)})".strip()
+            street_full = f"{road} ({_plus_code(lat, lon, town)})".strip()
 
         formatted   = ", ".join(filter(None, [street_full, town, county, country]))
         return formatted, town
@@ -441,7 +443,7 @@ def _get_route_geo_info(gpx_path: Path, log=print):
     if start_pt:
         start_addr, start_town = _reverse_geocode(start_pt[0], start_pt[1], log)
         start_link = _google_maps_link(start_pt[0], start_pt[1])
-        start_cell = f"{start_link}\n{start_addr}"
+        start_cell = f"{start_link} {start_addr}"
         time.sleep(1)  # Nominatim rate limit
     else:
         start_town = ""
@@ -449,7 +451,7 @@ def _get_route_geo_info(gpx_path: Path, log=print):
     if end_pt:
         end_addr, end_town = _reverse_geocode(end_pt[0], end_pt[1], log)
         end_link = _google_maps_link(end_pt[0], end_pt[1])
-        end_cell = f"{end_link}\n{end_addr}"
+        end_cell = f"{end_link} {end_addr}"
     else:
         end_town = ""
 
@@ -469,7 +471,7 @@ def _init_share_output_file(output_dir: Path, export_format: str) -> Path:
     headers = ["Map Name", "Share URL", "Start Position", "End Position", "City"]
     if export_format == "csv":
         with share_output.open("w", encoding="utf-8", newline="") as fh:
-            csv.writer(fh, quoting=csv.QUOTE_ALL).writerow(headers)
+            csv.writer(fh).writerow(headers)
     else:
         share_output.write_text("\t".join(headers) + "\n", encoding="utf-8")
     return share_output
@@ -519,7 +521,7 @@ def _append_share_output_row(output_file: Path, export_format: str, map_name: st
     export_format = export_format.lower()
     if export_format == "csv":
         with output_file.open("a", encoding="utf-8", newline="") as fh:
-            csv.writer(fh, quoting=csv.QUOTE_ALL).writerow([map_name, share_url, start_pos, end_pos, city])
+            csv.writer(fh).writerow([map_name, share_url, start_pos, end_pos, city])
     else:
         with output_file.open("a", encoding="utf-8") as fh:
             fh.write(f"{map_name}\t{share_url}\t{start_pos}\t{end_pos}\t{city}\n")
