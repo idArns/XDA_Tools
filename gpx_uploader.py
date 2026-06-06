@@ -471,7 +471,7 @@ def _init_share_output_file(output_dir: Path, export_format: str) -> Path:
     share_output = output_dir / f"mymaps_share_links_{datetime.now():%Y%m%d_%H%M%S}.{export_format}"
     headers = ["Map Name", "Share URL", "Start Position", "End Position", "City"]
     if export_format == "csv":
-        with share_output.open("w", encoding="utf-8", newline="") as fh:
+        with share_output.open("w", encoding="utf-8-sig", newline="") as fh:
             csv.writer(fh).writerow(headers)
     else:
         share_output.write_text("\t".join(headers) + "\n", encoding="utf-8")
@@ -970,54 +970,66 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
 
                     # ── Step 8: Rename layer ───────────────────────────────
                     log(f"  ✏️   Renaming layer to '{map_name}'…")
-                    try:
+                    for _attempt in range(3):
                         # Strategy: Match by stem, then filename, then first visible
-                        layer_el = None
-                        for candidate_text in (gpx_path.stem, gpx_path.name):
-                            loc = page.locator(".pbTTYe-r4nke", has_text=candidate_text).first
-                            if loc.count() > 0:
-                                layer_el = loc
-                                log(f"  🎯  Matched layer by '{candidate_text}'")
-                                break
-                        
-                        if not layer_el:
-                            log("  ℹ️  No exact text match; using first visible layer")
-                            layer_el = page.locator(".pbTTYe-r4nke").first
+                        try:
+                            layer_el = None
+                            for candidate_text in (gpx_path.stem, gpx_path.name):
+                                loc = page.locator(".pbTTYe-r4nke", has_text=candidate_text).first
+                                if loc.count() > 0:
+                                    layer_el = loc
+                                    log(f"  🎯  Matched layer by '{candidate_text}'")
+                                    break
+                            if not layer_el:
+                                log("  ℹ️  No exact text match; using first visible layer")
+                                layer_el = page.locator(".pbTTYe-r4nke").first
+                            layer_el.wait_for(state="visible", timeout=3_000)
+                            time.sleep(0.3)  # let any autosave settle
+                            layer_el.click(force=True)
+                            page.wait_for_selector("#update-layer-name", timeout=8_000, state="visible")
+                            inp = page.locator("#update-layer-name .Sx9Kwc-pbTTYe-r4nke-fmcmS").first
+                            inp.click(force=True)
+                            inp.fill(map_name)
+                            page.click("#update-layer-name button[name='save']", force=True)
+                            page.wait_for_selector("#update-layer-name", timeout=8_000, state="hidden")
+                            log("  ✅  Layer renamed")
+                            break
+                        except Exception as e:
+                            log(f"  ⚠️  Layer rename attempt {_attempt + 1}/3 failed: {e}")
+                            time.sleep(1)
+                    else:
+                        log("  ⚠️  Layer rename gave up after 3 attempts, continuing…")
 
-                        layer_el.wait_for(state="visible", timeout=3_000)
-                        layer_el.click(force=True)
-                        page.wait_for_selector("#update-layer-name", timeout=8_000, state="visible")
-                        inp = page.locator("#update-layer-name .Sx9Kwc-pbTTYe-r4nke-fmcmS").first
-                        inp.click(force=True)
-                        inp.fill(map_name)
-                        page.click("#update-layer-name button[name='save']", force=True)
-                        page.wait_for_selector("#update-layer-name", timeout=8_000, state="hidden")
-                        log("  ✅  Layer renamed")
-                    except Exception as e:
-                        log(f"  ⚠️  Layer rename failed: {e}")
+                    time.sleep(0.3)  # let layer rename save settle before touching map title
 
                     # ── Step 9: Rename map ─────────────────────────────────
                     log(f"  🗺️   Renaming map to '{map_name}'…")
-                    try:
-                        map_title_el = page.wait_for_selector(".i4ewOd-r4nke", timeout=10_000, state="visible")
-                        map_title_el.click(force=True)
-                        page.wait_for_selector("#update-map", timeout=8_000, state="visible")
-                        inp = page.wait_for_selector("#update-map .Sx9Kwc-i4ewOd-r4nke-fmcmS", timeout=5_000, state="visible")
-                        inp.click(force=True)
-                        inp.fill(map_name)
-                        save_btn = page.wait_for_selector("#update-map button[name='save']", timeout=5_000, state="visible")
-                        save_btn.click(force=True)
-                        page.wait_for_selector("#update-map", timeout=8_000, state="hidden")
-                        log(f"  ✅  Map renamed to '{map_name}'")
-                    except Exception as e:
-                        log(f"  ⚠️  Map rename failed: {e}")
+                    for _attempt in range(3):
+                        try:
+                            map_title_el = page.wait_for_selector(".i4ewOd-r4nke", timeout=10_000, state="visible")
+                            time.sleep(0.3)  # let any autosave settle
+                            map_title_el.click(force=True)
+                            page.wait_for_selector("#update-map", timeout=8_000, state="visible")
+                            inp = page.wait_for_selector("#update-map .Sx9Kwc-i4ewOd-r4nke-fmcmS", timeout=5_000, state="visible")
+                            inp.click(force=True)
+                            inp.fill(map_name)
+                            save_btn = page.wait_for_selector("#update-map button[name='save']", timeout=5_000, state="visible")
+                            save_btn.click(force=True)
+                            page.wait_for_selector("#update-map", timeout=8_000, state="hidden")
+                            log(f"  ✅  Map renamed to '{map_name}'")
+                            break
+                        except Exception as e:
+                            log(f"  ⚠️  Map rename attempt {_attempt + 1}/3 failed: {e}")
+                            time.sleep(1)
+                    else:
+                        log("  ⚠️  Map rename gave up after 3 attempts, continuing…")
 
                     # ── Step 10: Save map screenshot ───────────────────────
                     log("  📸  Capturing route screenshot…")
                     try:
                         _capture_map_screenshot(page, output_dir, map_name, log)
-                    except Exception as e:
-                        log(f"  ⚠️  Screenshot capture failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Screenshot capture failed: {type(e).__name__}: {e}")
 
                     # ── Step 10b: Reverse geocode start/end points ─────────
                     log("  🌍  Looking up start/end addresses…")
@@ -1033,8 +1045,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     try:
                         _save_share_link(page, share_output, map_name, log, share_export_format,
                                          start_pos=start_pos, end_pos=end_pos, city=city)
-                    except Exception as e:
-                        log(f"  ⚠️  Share link export failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Share link export failed: {type(e).__name__}: {e}")
 
                     log(f"  ✅  Done: {map_name}")
 
@@ -1049,8 +1061,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
 
                 context.close()
                 done_callback(True)
-        except Exception as e:
-            log(f"❌  Fatal error: {e}")
+        except BaseException as e:
+            log(f"❌  Fatal error: {type(e).__name__}: {e}")
             done_callback(False)
 
     threading.Thread(target=_run, daemon=True).start()
