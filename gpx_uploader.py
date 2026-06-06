@@ -15,6 +15,7 @@ import sys
 import time
 import threading
 import tkinter as tk
+from tkinter import messagebox
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -846,7 +847,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
             with sync_playwright() as p:
                 log("🔧  Playwright context started, launching Chromium...")
                 # Persistent context to keep you logged in to Google
-                user_data_dir = Path.cwd() / ".google_profile"
+                user_data_dir = Path.home() / ".gpxtools_google_profile"
                 context = p.chromium.launch_persistent_context(
                     str(user_data_dir),
                     viewport={'width': _screen_w, 'height': _screen_h},
@@ -1381,6 +1382,12 @@ class GpxTab(tk.Frame):
             self.drop_label.config(
                 text="⊕  Drop .gpx files here  /  click to browse", fg=MUTED)
 
+    def _confirm_files(self, names: list) -> bool:
+        """Show a blocking info dialog listing found files. Returns True if user clicks Yes."""
+        file_list = "\n".join(f"  • {n}" for n in names)
+        msg = f"Found {len(names)} file(s):\n\n{file_list}\n\nDoes this look OK to you?"
+        return messagebox.askyesno("Confirm Upload", msg, parent=self)
+
     def _start_upload(self):
         if self._running:
             return
@@ -1399,10 +1406,14 @@ class GpxTab(tk.Frame):
             return
 
         if self._gpx_files:
-            # Manual files selected — use those directly
+            # Manual files selected — confirm before proceeding
+            names = [Path(p).stem for p in self._gpx_files]
+            if not self._confirm_files(names):
+                self.status_var.set("Upload cancelled.")
+                return
             self._run_upload(list(self._gpx_files), output_dir, export_format)
         else:
-            # No manual files — pull from Strava
+            # No manual files — pull metadata from Strava, confirm, then write GPX
             if not _strava_token_store.get("access_token"):
                 self.status_var.set("⚠  No GPX files and Strava not connected. Connect Strava in Settings.")
                 return
@@ -1414,16 +1425,62 @@ class GpxTab(tk.Frame):
 
             def _strava_worker():
                 try:
-                    gpx_paths = strava_pull_gpx_files(date_str, output_dir, self._log)
-                    if not gpx_paths:
+                    # Step 1: fetch metadata only — no files written yet
+                    activities = _strava_fetch_activities_for_date(date_str, self._log)
+                    if not activities:
                         self._log(f"⚠  No Strava activities found matching '{date_str}'.")
                         self.after(0, lambda: self.go_btn.config(
                             state="normal", text="▶  Upload to My Maps", bg=ACCENT))
                         self.after(0, lambda: self.status_var.set("No matching Strava activities found."))
                         self._running = False
                         return
-                    self._log(f"✅  {len(gpx_paths)} GPX file(s) ready from Strava.")
-                    self.after(0, lambda: self._run_upload(gpx_paths, output_dir, export_format))
+
+                    names = [_safe_filename(a.get("name", f"activity_{a['id']}")) for a in activities]
+                    self._log(f"✅  {len(activities)} activit{'y' if len(activities)==1 else 'ies'} found.")
+
+                    # Step 2: confirm on the main thread before writing anything
+                    def _confirm_then_run():
+                        if not self._confirm_files(names):
+                            # User said No — delete the empty output folder and reset
+                            self.status_var.set("Upload cancelled.")
+                            self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT)
+                            self._running = False
+                            try:
+                                import shutil
+                                shutil.rmtree(output_dir, ignore_errors=True)
+                                self._log("🗑️  Output folder removed (cancelled before writing).")
+                            except Exception:
+                                pass
+                            return
+
+                        # Step 3: user confirmed — now write GPX files and proceed
+                        def _write_and_run():
+                            try:
+                                output_dir.mkdir(parents=True, exist_ok=True)
+                                gpx_paths = []
+                                for act in activities:
+                                    p = _strava_activity_to_gpx(act, output_dir, self._log)
+                                    if p:
+                                        gpx_paths.append(p)
+                                if not gpx_paths:
+                                    self._log("⚠  No GPX files could be written.")
+                                    self.after(0, lambda: self.go_btn.config(
+                                        state="normal", text="▶  Upload to My Maps", bg=ACCENT))
+                                    self.after(0, lambda: self.status_var.set("No GPX files written."))
+                                    self._running = False
+                                    return
+                                self._log(f"💾  {len(gpx_paths)} GPX file(s) written.")
+                                self.after(0, lambda: self._run_upload(gpx_paths, output_dir, export_format))
+                            except Exception as e:
+                                self._log(f"❌  GPX write failed: {e}")
+                                self.after(0, lambda: self.go_btn.config(
+                                    state="normal", text="▶  Upload to My Maps", bg=ACCENT))
+                                self.after(0, lambda: self.status_var.set("GPX write failed — check log."))
+                                self._running = False
+
+                        threading.Thread(target=_write_and_run, daemon=True).start()
+
+                    self.after(0, _confirm_then_run)
                 except Exception as e:
                     self._log(f"❌  Strava pull failed: {e}")
                     self.after(0, lambda: self.go_btn.config(
