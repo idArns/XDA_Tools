@@ -936,11 +936,26 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     import_ok = False
                     for attempt in range(1, 4):  # up to 3 attempts
                         if attempt > 1:
+                            time.sleep(1)
                             log(f"  🔄  Import retry {attempt}/3 for '{gpx_path.name}'…")
+
+                            # Check import button state before reloading.
+                            # After a successful import My Maps hides or removes the button.
+                            # Either state (hidden or absent) means the layer is already there.
+                            try:
+                                import_btn_loc = page.locator("#ly0-layerview-import-link")
+                                btn_count = import_btn_loc.count()
+                                if btn_count == 0 or not import_btn_loc.first.is_visible():
+                                    log(f"  ✅  Import button {'absent' if btn_count == 0 else 'hidden'} — layer already imported, skipping re-import.")
+                                    import_ok = True
+                                    break
+                            except Exception:
+                                pass
+
                             # Hard reload is the safest way to clear Google's "Hiba történt" state
                             # while staying on the same map ID.
                             page.reload(wait_until="domcontentloaded")
-                            time.sleep(2) 
+                            time.sleep(1)
                             try:
                                 import_btn = page.wait_for_selector("#ly0-layerview-import-link", timeout=20_000, state="visible")
                                 import_btn.click(force=True)
@@ -958,7 +973,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
 
                         log("  ⏳  Waiting for imported layer to appear…")
                         try:
-                            _wait_for_imported_layer(page, gpx_path, log, timeout_ms=4_000)
+                            _wait_for_imported_layer(page, gpx_path, log, timeout_ms=5_000)
                             import_ok = True
                             break
                         except RuntimeError as e:
