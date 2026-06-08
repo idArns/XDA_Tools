@@ -1269,6 +1269,7 @@ class GpxTab(tk.Frame):
         super().__init__(master, bg=BG)
         self._gpx_files = []
         self._running = False
+        self._log_file = None
         self._build()
 
     def _build(self):
@@ -1510,6 +1511,8 @@ class GpxTab(tk.Frame):
 
     def _run_upload(self, gpx_paths, output_dir, export_format):
         self._running = True
+        self._log_file = output_dir / f"run_log_{datetime.now():%Y%m%d_%H%M%S}.txt"
+        self._log_file.parent.mkdir(parents=True, exist_ok=True)
         self.go_btn.config(state="disabled", text="⏳  Running…", bg=MUTED)
         self.status_var.set("Browser opening — sign into Google if prompted…")
         self._log("─" * 48)
@@ -1535,6 +1538,14 @@ class GpxTab(tk.Frame):
         self.after(0, lambda: self.status_var.set(msg))
 
     def _log(self, msg):
+        # Write to file immediately so crashes leave a complete log
+        try:
+            log_file = getattr(self, "_log_file", None)
+            if log_file:
+                with log_file.open("a", encoding="utf-8") as fh:
+                    fh.write(msg + "\n")
+        except Exception:
+            pass
         def _a():
             self.log_text.config(state="normal")
             self.log_text.insert("end", msg + "\n")
