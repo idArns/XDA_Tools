@@ -938,7 +938,6 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                         if attempt > 1:
                             time.sleep(1)
                             log(f"  🔄  Import retry {attempt}/3 for '{gpx_path.name}'…")
-
                             # Check import button state before reloading.
                             # After a successful import My Maps hides or removes the button.
                             # Either state (hidden or absent) means the layer is already there.
@@ -1052,8 +1051,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     try:
                         start_pos, end_pos, city = _get_route_geo_info(gpx_path, log)
                         log(f"  📍  City: {city or '(unknown)'}")
-                    except Exception as e:
-                        log(f"  ⚠️  Geo lookup failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Geo lookup failed: {type(e).__name__}: {e}")
                         start_pos, end_pos, city = "", "", ""
 
                     # ── Step 11: Save share link ───────────────────────────
@@ -1079,6 +1078,10 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                 done_callback(True)
         except BaseException as e:
             log(f"❌  Fatal error: {type(e).__name__}: {e}")
+            try:
+                context.close()
+            except Exception:
+                pass
             done_callback(False)
 
     threading.Thread(target=_run, daemon=True).start()
