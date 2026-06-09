@@ -15,7 +15,6 @@ import sys
 import time
 import threading
 import tkinter as tk
-from tkinter import messagebox
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -472,7 +471,7 @@ def _init_share_output_file(output_dir: Path, export_format: str) -> Path:
     share_output = output_dir / f"mymaps_share_links_{datetime.now():%Y%m%d_%H%M%S}.{export_format}"
     headers = ["Map Name", "Share URL", "Start Position", "End Position", "City"]
     if export_format == "csv":
-        with share_output.open("w", encoding="utf-8-sig", newline="") as fh:
+        with share_output.open("w", encoding="utf-8", newline="") as fh:
             csv.writer(fh).writerow(headers)
     else:
         share_output.write_text("\t".join(headers) + "\n", encoding="utf-8")
@@ -801,8 +800,12 @@ def _wait_for_imported_layer(page, gpx_path, log, timeout_ms=20_000):
                         if el.is_visible():
                             return
 
-            except BaseException:
+            except Exception:
                 pass
+
+        time.sleep(0.4)
+
+    raise RuntimeError("Import did not produce a valid layer name")
 
 
 def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
@@ -843,7 +846,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
             with sync_playwright() as p:
                 log("🔧  Playwright context started, launching Chromium...")
                 # Persistent context to keep you logged in to Google
-                user_data_dir = Path.home() / ".gpxtools_google_profile"
+                user_data_dir = Path.cwd() / ".google_profile"
                 context = p.chromium.launch_persistent_context(
                     str(user_data_dir),
                     viewport={'width': _screen_w, 'height': _screen_h},
@@ -932,25 +935,11 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     import_ok = False
                     for attempt in range(1, 4):  # up to 3 attempts
                         if attempt > 1:
-                            time.sleep(1)
                             log(f"  🔄  Import retry {attempt}/3 for '{gpx_path.name}'…")
-                            # Check import button state before reloading.
-                            # After a successful import My Maps hides or removes the button.
-                            # Either state (hidden or absent) means the layer is already there.
-                            try:
-                                import_btn_loc = page.locator("#ly0-layerview-import-link")
-                                btn_count = import_btn_loc.count()
-                                if btn_count == 0 or not import_btn_loc.first.is_visible():
-                                    log(f"  ✅  Import button {'absent' if btn_count == 0 else 'hidden'} — layer already imported, skipping re-import.")
-                                    import_ok = True
-                                    break
-                            except Exception:
-                                pass
-
                             # Hard reload is the safest way to clear Google's "Hiba történt" state
                             # while staying on the same map ID.
                             page.reload(wait_until="domcontentloaded")
-                            time.sleep(1)
+                            time.sleep(2) 
                             try:
                                 import_btn = page.wait_for_selector("#ly0-layerview-import-link", timeout=20_000, state="visible")
                                 import_btn.click(force=True)
@@ -968,11 +957,11 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
 
                         log("  ⏳  Waiting for imported layer to appear…")
                         try:
-                            _wait_for_imported_layer(page, gpx_path, log, timeout_ms=5_000)
+                            _wait_for_imported_layer(page, gpx_path, log, timeout_ms=4_000)
                             import_ok = True
                             break
-                        except BaseException as e:
-                            log(f"  ❌  Import did not finish cleanly: {type(e).__name__}: {e}")
+                        except RuntimeError as e:
+                            log(f"  ❌  Import did not finish cleanly: {e}")
                             continue
 
                     if not import_ok:
@@ -981,74 +970,62 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
 
                     # ── Step 8: Rename layer ───────────────────────────────
                     log(f"  ✏️   Renaming layer to '{map_name}'…")
-                    for _attempt in range(3):
+                    try:
                         # Strategy: Match by stem, then filename, then first visible
-                        try:
-                            layer_el = None
-                            for candidate_text in (gpx_path.stem, gpx_path.name):
-                                loc = page.locator(".pbTTYe-r4nke", has_text=candidate_text).first
-                                if loc.count() > 0:
-                                    layer_el = loc
-                                    log(f"  🎯  Matched layer by '{candidate_text}'")
-                                    break
-                            if not layer_el:
-                                log("  ℹ️  No exact text match; using first visible layer")
-                                layer_el = page.locator(".pbTTYe-r4nke").first
-                            layer_el.wait_for(state="visible", timeout=3_000)
-                            time.sleep(0.3)  # let any autosave settle
-                            layer_el.click(force=True)
-                            page.wait_for_selector("#update-layer-name", timeout=8_000, state="visible")
-                            inp = page.locator("#update-layer-name .Sx9Kwc-pbTTYe-r4nke-fmcmS").first
-                            inp.click(force=True)
-                            inp.fill(map_name)
-                            page.click("#update-layer-name button[name='save']", force=True)
-                            page.wait_for_selector("#update-layer-name", timeout=8_000, state="hidden")
-                            log("  ✅  Layer renamed")
-                            break
-                        except Exception as e:
-                            log(f"  ⚠️  Layer rename attempt {_attempt + 1}/3 failed: {e}")
-                            time.sleep(1)
-                    else:
-                        log("  ⚠️  Layer rename gave up after 3 attempts, continuing…")
+                        layer_el = None
+                        for candidate_text in (gpx_path.stem, gpx_path.name):
+                            loc = page.locator(".pbTTYe-r4nke", has_text=candidate_text).first
+                            if loc.count() > 0:
+                                layer_el = loc
+                                log(f"  🎯  Matched layer by '{candidate_text}'")
+                                break
+                        
+                        if not layer_el:
+                            log("  ℹ️  No exact text match; using first visible layer")
+                            layer_el = page.locator(".pbTTYe-r4nke").first
 
-                    time.sleep(0.3)  # let layer rename save settle before touching map title
+                        layer_el.wait_for(state="visible", timeout=3_000)
+                        layer_el.click(force=True)
+                        page.wait_for_selector("#update-layer-name", timeout=8_000, state="visible")
+                        inp = page.locator("#update-layer-name .Sx9Kwc-pbTTYe-r4nke-fmcmS").first
+                        inp.click(force=True)
+                        inp.fill(map_name)
+                        page.click("#update-layer-name button[name='save']", force=True)
+                        page.wait_for_selector("#update-layer-name", timeout=8_000, state="hidden")
+                        log("  ✅  Layer renamed")
+                    except Exception as e:
+                        log(f"  ⚠️  Layer rename failed: {e}")
 
                     # ── Step 9: Rename map ─────────────────────────────────
                     log(f"  🗺️   Renaming map to '{map_name}'…")
-                    for _attempt in range(3):
-                        try:
-                            map_title_el = page.wait_for_selector(".i4ewOd-r4nke", timeout=10_000, state="visible")
-                            time.sleep(0.3)  # let any autosave settle
-                            map_title_el.click(force=True)
-                            page.wait_for_selector("#update-map", timeout=8_000, state="visible")
-                            inp = page.wait_for_selector("#update-map .Sx9Kwc-i4ewOd-r4nke-fmcmS", timeout=5_000, state="visible")
-                            inp.click(force=True)
-                            inp.fill(map_name)
-                            save_btn = page.wait_for_selector("#update-map button[name='save']", timeout=5_000, state="visible")
-                            save_btn.click(force=True)
-                            page.wait_for_selector("#update-map", timeout=8_000, state="hidden")
-                            log(f"  ✅  Map renamed to '{map_name}'")
-                            break
-                        except Exception as e:
-                            log(f"  ⚠️  Map rename attempt {_attempt + 1}/3 failed: {e}")
-                            time.sleep(1)
-                    else:
-                        log("  ⚠️  Map rename gave up after 3 attempts, continuing…")
+                    try:
+                        map_title_el = page.wait_for_selector(".i4ewOd-r4nke", timeout=10_000, state="visible")
+                        map_title_el.click(force=True)
+                        page.wait_for_selector("#update-map", timeout=8_000, state="visible")
+                        inp = page.wait_for_selector("#update-map .Sx9Kwc-i4ewOd-r4nke-fmcmS", timeout=5_000, state="visible")
+                        inp.click(force=True)
+                        inp.fill(map_name)
+                        save_btn = page.wait_for_selector("#update-map button[name='save']", timeout=5_000, state="visible")
+                        save_btn.click(force=True)
+                        page.wait_for_selector("#update-map", timeout=8_000, state="hidden")
+                        log(f"  ✅  Map renamed to '{map_name}'")
+                    except Exception as e:
+                        log(f"  ⚠️  Map rename failed: {e}")
 
                     # ── Step 10: Save map screenshot ───────────────────────
                     log("  📸  Capturing route screenshot…")
                     try:
                         _capture_map_screenshot(page, output_dir, map_name, log)
-                    except BaseException as e:
-                        log(f"  ⚠️  Screenshot capture failed: {type(e).__name__}: {e}")
+                    except Exception as e:
+                        log(f"  ⚠️  Screenshot capture failed: {e}")
 
                     # ── Step 10b: Reverse geocode start/end points ─────────
                     log("  🌍  Looking up start/end addresses…")
                     try:
                         start_pos, end_pos, city = _get_route_geo_info(gpx_path, log)
                         log(f"  📍  City: {city or '(unknown)'}")
-                    except BaseException as e:
-                        log(f"  ⚠️  Geo lookup failed: {type(e).__name__}: {e}")
+                    except Exception as e:
+                        log(f"  ⚠️  Geo lookup failed: {e}")
                         start_pos, end_pos, city = "", "", ""
 
                     # ── Step 11: Save share link ───────────────────────────
@@ -1056,8 +1033,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     try:
                         _save_share_link(page, share_output, map_name, log, share_export_format,
                                          start_pos=start_pos, end_pos=end_pos, city=city)
-                    except BaseException as e:
-                        log(f"  ⚠️  Share link export failed: {type(e).__name__}: {e}")
+                    except Exception as e:
+                        log(f"  ⚠️  Share link export failed: {e}")
 
                     log(f"  ✅  Done: {map_name}")
 
@@ -1072,12 +1049,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
 
                 context.close()
                 done_callback(True)
-        except BaseException as e:
-            log(f"❌  Fatal error: {type(e).__name__}: {e}")
-            try:
-                context.close()
-            except Exception:
-                pass
+        except Exception as e:
+            log(f"❌  Fatal error: {e}")
             done_callback(False)
 
     threading.Thread(target=_run, daemon=True).start()
@@ -1265,7 +1238,6 @@ class GpxTab(tk.Frame):
         super().__init__(master, bg=BG)
         self._gpx_files = []
         self._running = False
-        self._log_file = None
         self._build()
 
     def _build(self):
@@ -1397,12 +1369,6 @@ class GpxTab(tk.Frame):
             self.drop_label.config(
                 text="⊕  Drop .gpx files here  /  click to browse", fg=MUTED)
 
-    def _confirm_files(self, names: list) -> bool:
-        """Show a blocking info dialog listing found files. Returns True if user clicks Yes."""
-        file_list = "\n".join(f"  • {n}" for n in names)
-        msg = f"Found {len(names)} file(s):\n\n{file_list}\n\nDoes this look OK to you?"
-        return messagebox.askyesno("Confirm Upload", msg, parent=self)
-
     def _start_upload(self):
         if self._running:
             return
@@ -1421,14 +1387,10 @@ class GpxTab(tk.Frame):
             return
 
         if self._gpx_files:
-            # Manual files selected — confirm before proceeding
-            names = [Path(p).stem for p in self._gpx_files]
-            if not self._confirm_files(names):
-                self.status_var.set("Upload cancelled.")
-                return
+            # Manual files selected — use those directly
             self._run_upload(list(self._gpx_files), output_dir, export_format)
         else:
-            # No manual files — pull metadata from Strava, confirm, then write GPX
+            # No manual files — pull from Strava
             if not _strava_token_store.get("access_token"):
                 self.status_var.set("⚠  No GPX files and Strava not connected. Connect Strava in Settings.")
                 return
@@ -1440,62 +1402,16 @@ class GpxTab(tk.Frame):
 
             def _strava_worker():
                 try:
-                    # Step 1: fetch metadata only — no files written yet
-                    activities = _strava_fetch_activities_for_date(date_str, self._log)
-                    if not activities:
+                    gpx_paths = strava_pull_gpx_files(date_str, output_dir, self._log)
+                    if not gpx_paths:
                         self._log(f"⚠  No Strava activities found matching '{date_str}'.")
                         self.after(0, lambda: self.go_btn.config(
                             state="normal", text="▶  Upload to My Maps", bg=ACCENT))
                         self.after(0, lambda: self.status_var.set("No matching Strava activities found."))
                         self._running = False
                         return
-
-                    names = [_safe_filename(a.get("name", f"activity_{a['id']}")) for a in activities]
-                    self._log(f"✅  {len(activities)} activit{'y' if len(activities)==1 else 'ies'} found.")
-
-                    # Step 2: confirm on the main thread before writing anything
-                    def _confirm_then_run():
-                        if not self._confirm_files(names):
-                            # User said No — delete the empty output folder and reset
-                            self.status_var.set("Upload cancelled.")
-                            self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT)
-                            self._running = False
-                            try:
-                                import shutil
-                                shutil.rmtree(output_dir, ignore_errors=True)
-                                self._log("🗑️  Output folder removed (cancelled before writing).")
-                            except Exception:
-                                pass
-                            return
-
-                        # Step 3: user confirmed — now write GPX files and proceed
-                        def _write_and_run():
-                            try:
-                                output_dir.mkdir(parents=True, exist_ok=True)
-                                gpx_paths = []
-                                for act in activities:
-                                    p = _strava_activity_to_gpx(act, output_dir, self._log)
-                                    if p:
-                                        gpx_paths.append(p)
-                                if not gpx_paths:
-                                    self._log("⚠  No GPX files could be written.")
-                                    self.after(0, lambda: self.go_btn.config(
-                                        state="normal", text="▶  Upload to My Maps", bg=ACCENT))
-                                    self.after(0, lambda: self.status_var.set("No GPX files written."))
-                                    self._running = False
-                                    return
-                                self._log(f"💾  {len(gpx_paths)} GPX file(s) written.")
-                                self.after(0, lambda: self._run_upload(gpx_paths, output_dir, export_format))
-                            except Exception as e:
-                                self._log(f"❌  GPX write failed: {e}")
-                                self.after(0, lambda: self.go_btn.config(
-                                    state="normal", text="▶  Upload to My Maps", bg=ACCENT))
-                                self.after(0, lambda: self.status_var.set("GPX write failed — check log."))
-                                self._running = False
-
-                        threading.Thread(target=_write_and_run, daemon=True).start()
-
-                    self.after(0, _confirm_then_run)
+                    self._log(f"✅  {len(gpx_paths)} GPX file(s) ready from Strava.")
+                    self.after(0, lambda: self._run_upload(gpx_paths, output_dir, export_format))
                 except Exception as e:
                     self._log(f"❌  Strava pull failed: {e}")
                     self.after(0, lambda: self.go_btn.config(
@@ -1507,8 +1423,6 @@ class GpxTab(tk.Frame):
 
     def _run_upload(self, gpx_paths, output_dir, export_format):
         self._running = True
-        self._log_file = output_dir / f"run_log_{datetime.now():%Y%m%d_%H%M%S}.txt"
-        self._log_file.parent.mkdir(parents=True, exist_ok=True)
         self.go_btn.config(state="disabled", text="⏳  Running…", bg=MUTED)
         self.status_var.set("Browser opening — sign into Google if prompted…")
         self._log("─" * 48)
@@ -1534,14 +1448,6 @@ class GpxTab(tk.Frame):
         self.after(0, lambda: self.status_var.set(msg))
 
     def _log(self, msg):
-        # Write to file immediately so crashes leave a complete log
-        try:
-            log_file = getattr(self, "_log_file", None)
-            if log_file:
-                with log_file.open("a", encoding="utf-8") as fh:
-                    fh.write(msg + "\n")
-        except Exception:
-            pass
         def _a():
             self.log_text.config(state="normal")
             self.log_text.insert("end", msg + "\n")
