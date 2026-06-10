@@ -281,19 +281,6 @@ def _strava_activity_to_gpx(activity: dict, output_dir: Path, log=print) -> Path
     return gpx_path
 
 
-def strava_pull_gpx_files(date_str: str, output_dir: Path, log=print):
-    """
-    Full pipeline: fetch matching activities, convert to GPX, return list of Paths.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    activities = _strava_fetch_activities_for_date(date_str, log)
-    gpx_paths = []
-    for act in activities:
-        p = _strava_activity_to_gpx(act, output_dir, log)
-        if p:
-            gpx_paths.append(p)
-    return gpx_paths
-
 
 # ===========================================================================
 # TAB 1 — Google My Maps automation
@@ -1386,6 +1373,7 @@ class GpxTab(tk.Frame):
         export_format = getattr(self.winfo_toplevel(), "share_export_format", tk.StringVar(value="csv")).get().lower()
         output_dir = _make_run_output_dir()
 
+        # Build yyyymmdd filter string from the date picker
         try:
             date_str = (
                 f"{int(self._date_y.get()):04d}"
@@ -1441,7 +1429,12 @@ class GpxTab(tk.Frame):
 
                         def _write_and_run():
                             try:
-                                gpx_paths = strava_pull_gpx_files(date_str, output_dir, self._log)
+                                output_dir.mkdir(parents=True, exist_ok=True)
+                                gpx_paths = []
+                                for act in activities:
+                                    p = _strava_activity_to_gpx(act, output_dir, self._log)
+                                    if p:
+                                        gpx_paths.append(p)
                                 if not gpx_paths:
                                     self._log("⚠  No GPX files could be written.")
                                     self.after(0, lambda: self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT))
