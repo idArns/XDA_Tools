@@ -471,7 +471,7 @@ def _init_share_output_file(output_dir: Path, export_format: str) -> Path:
     share_output = output_dir / f"mymaps_share_links_{datetime.now():%Y%m%d_%H%M%S}.{export_format}"
     headers = ["Map Name", "Share URL", "Start Position", "End Position", "City"]
     if export_format == "csv":
-        with share_output.open("w", encoding="utf-8", newline="") as fh:
+        with share_output.open("w", encoding="utf-8-sig", newline="") as fh:
             csv.writer(fh).writerow(headers)
     else:
         share_output.write_text("\t".join(headers) + "\n", encoding="utf-8")
@@ -846,7 +846,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
             with sync_playwright() as p:
                 log("🔧  Playwright context started, launching Chromium...")
                 # Persistent context to keep you logged in to Google
-                user_data_dir = Path.cwd() / ".google_profile"
+                user_data_dir = Path.home() / ".gpxtools_google_profile"
                 context = p.chromium.launch_persistent_context(
                     str(user_data_dir),
                     viewport={'width': _screen_w, 'height': _screen_h},
@@ -1016,16 +1016,16 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     log("  📸  Capturing route screenshot…")
                     try:
                         _capture_map_screenshot(page, output_dir, map_name, log)
-                    except Exception as e:
-                        log(f"  ⚠️  Screenshot capture failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Screenshot capture failed: {type(e).__name__}: {e}")
 
                     # ── Step 10b: Reverse geocode start/end points ─────────
                     log("  🌍  Looking up start/end addresses…")
                     try:
                         start_pos, end_pos, city = _get_route_geo_info(gpx_path, log)
                         log(f"  📍  City: {city or '(unknown)'}")
-                    except Exception as e:
-                        log(f"  ⚠️  Geo lookup failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Geo lookup failed: {type(e).__name__}: {e}")
                         start_pos, end_pos, city = "", "", ""
 
                     # ── Step 11: Save share link ───────────────────────────
@@ -1033,8 +1033,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     try:
                         _save_share_link(page, share_output, map_name, log, share_export_format,
                                          start_pos=start_pos, end_pos=end_pos, city=city)
-                    except Exception as e:
-                        log(f"  ⚠️  Share link export failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Share link export failed: {type(e).__name__}: {e}")
 
                     log(f"  ✅  Done: {map_name}")
 
@@ -1049,8 +1049,12 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
 
                 context.close()
                 done_callback(True)
-        except Exception as e:
-            log(f"❌  Fatal error: {e}")
+        except BaseException as e:
+            log(f"❌  Fatal error: {type(e).__name__}: {e}")
+            try:
+                context.close()
+            except Exception:
+                pass
             done_callback(False)
 
     threading.Thread(target=_run, daemon=True).start()
@@ -1238,6 +1242,7 @@ class GpxTab(tk.Frame):
         super().__init__(master, bg=BG)
         self._gpx_files = []
         self._running = False
+        self._log_file = None
         self._build()
 
     def _build(self):
@@ -1369,13 +1374,18 @@ class GpxTab(tk.Frame):
             self.drop_label.config(
                 text="⊕  Drop .gpx files here  /  click to browse", fg=MUTED)
 
+    def _confirm_files(self, names: list) -> bool:
+        from tkinter import messagebox
+        file_list = "\n".join(f"  • {n}" for n in names)
+        msg = f"Found {len(names)} file(s):\n\n{file_list}\n\nDoes this look OK to you?"
+        return messagebox.askyesno("Confirm Upload", msg, parent=self)
+
     def _start_upload(self):
         if self._running:
             return
         export_format = getattr(self.winfo_toplevel(), "share_export_format", tk.StringVar(value="csv")).get().lower()
         output_dir = _make_run_output_dir()
 
-        # Build yyyymmdd filter string from the date picker
         try:
             date_str = (
                 f"{int(self._date_y.get()):04d}"
@@ -1387,10 +1397,14 @@ class GpxTab(tk.Frame):
             return
 
         if self._gpx_files:
-            # Manual files selected — use those directly
+            # Manual files — confirm immediately
+            names = [Path(p).stem for p in self._gpx_files]
+            if not self._confirm_files(names):
+                self.status_var.set("Upload cancelled.")
+                return
             self._run_upload(list(self._gpx_files), output_dir, export_format)
         else:
-            # No manual files — pull from Strava
+            # Strava — fetch metadata first, confirm, then write GPX
             if not _strava_token_store.get("access_token"):
                 self.status_var.set("⚠  No GPX files and Strava not connected. Connect Strava in Settings.")
                 return
@@ -1402,20 +1416,52 @@ class GpxTab(tk.Frame):
 
             def _strava_worker():
                 try:
-                    gpx_paths = strava_pull_gpx_files(date_str, output_dir, self._log)
-                    if not gpx_paths:
+                    activities = _strava_fetch_activities_for_date(date_str, self._log)
+                    if not activities:
                         self._log(f"⚠  No Strava activities found matching '{date_str}'.")
-                        self.after(0, lambda: self.go_btn.config(
-                            state="normal", text="▶  Upload to My Maps", bg=ACCENT))
+                        self.after(0, lambda: self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT))
                         self.after(0, lambda: self.status_var.set("No matching Strava activities found."))
                         self._running = False
                         return
-                    self._log(f"✅  {len(gpx_paths)} GPX file(s) ready from Strava.")
-                    self.after(0, lambda: self._run_upload(gpx_paths, output_dir, export_format))
+                    names = [_safe_filename(a.get("name", f"activity_{a['id']}")) for a in activities]
+                    self._log(f"✅  {len(activities)} activit{'y' if len(activities)==1 else 'ies'} found.")
+
+                    def _confirm_then_run():
+                        if not self._confirm_files(names):
+                            self.status_var.set("Upload cancelled.")
+                            self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT)
+                            self._running = False
+                            try:
+                                import shutil
+                                shutil.rmtree(output_dir, ignore_errors=True)
+                                self._log("🗑️  Output folder removed (cancelled).")
+                            except Exception:
+                                pass
+                            return
+
+                        def _write_and_run():
+                            try:
+                                gpx_paths = strava_pull_gpx_files(date_str, output_dir, self._log)
+                                if not gpx_paths:
+                                    self._log("⚠  No GPX files could be written.")
+                                    self.after(0, lambda: self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT))
+                                    self.after(0, lambda: self.status_var.set("No GPX files written."))
+                                    self._running = False
+                                    return
+                                self._log(f"💾  {len(gpx_paths)} GPX file(s) written.")
+                                self.after(0, lambda: self._run_upload(gpx_paths, output_dir, export_format))
+                            except Exception as e:
+                                self._log(f"❌  GPX write failed: {e}")
+                                self.after(0, lambda: self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT))
+                                self.after(0, lambda: self.status_var.set("GPX write failed — check log."))
+                                self._running = False
+
+                        threading.Thread(target=_write_and_run, daemon=True).start()
+
+                    self.after(0, _confirm_then_run)
                 except Exception as e:
                     self._log(f"❌  Strava pull failed: {e}")
-                    self.after(0, lambda: self.go_btn.config(
-                        state="normal", text="▶  Upload to My Maps", bg=ACCENT))
+                    self.after(0, lambda: self.go_btn.config(state="normal", text="▶  Upload to My Maps", bg=ACCENT))
                     self.after(0, lambda: self.status_var.set("Strava pull failed — check log."))
                     self._running = False
 
@@ -1423,6 +1469,8 @@ class GpxTab(tk.Frame):
 
     def _run_upload(self, gpx_paths, output_dir, export_format):
         self._running = True
+        self._log_file = output_dir / f"run_log_{datetime.now():%Y%m%d_%H%M%S}.txt"
+        output_dir.mkdir(parents=True, exist_ok=True)
         self.go_btn.config(state="disabled", text="⏳  Running…", bg=MUTED)
         self.status_var.set("Browser opening — sign into Google if prompted…")
         self._log("─" * 48)
@@ -1448,6 +1496,12 @@ class GpxTab(tk.Frame):
         self.after(0, lambda: self.status_var.set(msg))
 
     def _log(self, msg):
+        try:
+            if self._log_file:
+                with self._log_file.open("a", encoding="utf-8") as fh:
+                    fh.write(msg + "\n")
+        except Exception:
+            pass
         def _a():
             self.log_text.config(state="normal")
             self.log_text.insert("end", msg + "\n")
