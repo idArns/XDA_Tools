@@ -788,7 +788,7 @@ def _wait_for_imported_layer(page, gpx_path, log, timeout_ms=20_000):
                         if el.is_visible():
                             return
 
-            except Exception:
+            except BaseException:
                 pass
 
         time.sleep(0.4)
@@ -953,7 +953,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                             _wait_for_imported_layer(page, gpx_path, log, timeout_ms=4_000)
                             import_ok = True
                             break
-                        except RuntimeError as e:
+                        except BaseException as e:
                             log(f"  ❌  Import did not finish cleanly: {type(e).__name__}: {e}")
                             continue
 
