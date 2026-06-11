@@ -20,6 +20,7 @@ import urllib.request
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from tkinter import font as tkfont, filedialog, ttk
+from tkinter import messagebox
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime, date
@@ -1362,7 +1363,6 @@ class GpxTab(tk.Frame):
                 text="⊕  Drop .gpx files here  /  click to browse", fg=MUTED)
 
     def _confirm_files(self, names: list) -> bool:
-        from tkinter import messagebox
         file_list = "\n".join(f"  • {n}" for n in names)
         msg = f"Found {len(names)} file(s):\n\n{file_list}\n\nDoes this look OK to you?"
         return messagebox.askyesno("Confirm Upload", msg, parent=self)
