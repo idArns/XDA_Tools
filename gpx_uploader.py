@@ -799,13 +799,14 @@ def _wait_for_imported_layer(page, gpx_path, log, timeout_ms=20_000):
 def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     share_export_format: str = "csv", open_links_after: bool = False):
     def _run():
+        failed_maps = []  # list of (map_name, reason_string) tuples
         try:
             log("🧵  Thread running, importing Playwright…")
             from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
             log("✅  Playwright imported OK")
         except Exception as e:
             log(f"❌  Playwright import failed: {e}")
-            done_callback(False)
+            done_callback(False, [])
             return
         chromium_exe = _find_chromium_exe()
         log(f"🔍  Chromium path: {chromium_exe or 'NOT FOUND - using Playwright default'}")
@@ -857,7 +858,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                 except PWTimeout:
                     log("❌  Timed out waiting for My Maps. Did you sign in?")
                     context.close()
-                    done_callback(False)
+                    done_callback(False, [])
                     return
 
                 for idx, gpx_path in enumerate(reversed(gpx_paths), 1):
@@ -872,14 +873,16 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                             page.wait_for_selector(".QT3Do-t0O6ic-LgbsSe-fmcmS", timeout=25_000)
                         except PWTimeout:
                             log(f"  ⚠️  My Maps home didn't reload, skipping {map_name}.")
+                            failed_maps.append((map_name, "couldn't navigate back to My Maps home — rerun upload for this map manually"))
                             continue
 
                     # ── Step 3: Click Create ──────────────────────────────
                     log("  🖱️  Clicking Create new map…")
                     try:
                         page.click(".QT3Do-t0O6ic-LgbsSe-fmcmS")
-                    except Exception as e:
-                        log(f"  ❌  Could not click Create: {e}")
+                    except BaseException as e:
+                        log(f"  ❌  Could not click Create: {type(e).__name__}: {e}")
+                        failed_maps.append((map_name, "couldn't create map — rerun upload for this map manually"))
                         continue
 
                     # ── Step 4: Confirm popup ──────────────────────────────
@@ -890,16 +893,16 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                         if popup_btn.count() > 0 and popup_btn.is_visible():
                             popup_btn.click(force=True)
                             log("  ✅  Confirmed popup")
-                    except Exception:
-                        pass
+                    except BaseException as e:
+                        log(f"  ⚠️  Failed to confirm popup: {type(e).__name__}: {e}")
 
                     # ── Step 5: Wait for editor to load ───
                     log("  ⏳  Waiting for editor…")
                     try:
                         page.wait_for_selector("#ly0-layerview-import-link", timeout=25_000, state="visible")
                         log(f"  ✅  Editor loaded: {page.url}")
-                    except Exception as e:
-                        log(f"Editor did not load in current tab: {e}")
+                    except BaseException as e:
+                        log(f"Editor did not load in current tab: {type(e).__name__}: {e}")
                         # Fallback: Google sometimes opens a new tab even if it usually doesn't
                         if len(context.pages) > 1:
                             page = context.pages[-1]
@@ -907,6 +910,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                             page.wait_for_load_state("domcontentloaded")
                         else:
                             log(f"Page stuck at: {page.url}")
+                            failed_maps.append((map_name, "couldn't create map — rerun upload for this map manually"))
                             continue
 
                     # ── Step 6: Click Import ───────────────────────────────
@@ -914,8 +918,9 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     try:
                         import_btn = page.wait_for_selector("#ly0-layerview-import-link", timeout=20_000, state="visible")
                         import_btn.click(force=True)
-                    except Exception as e:
-                        log(f"  ❌  Import button not found: {e}")
+                    except BaseException as e:
+                        log(f"  ❌  Import button not found: {type(e).__name__}: {e}")
+                        failed_maps.append((map_name, "couldn't import map — rerun upload for this map manually"))
                         continue
 
                     # ── Step 7: Attach the file from the import dialog ─────
@@ -939,8 +944,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                             _attach_file_from_import_dialog(page, gpx_path, log, timeout_ms=15_000)
                             # Tiny moment for Google to register the file
                             time.sleep(0.5)
-                        except Exception as e:
-                            log(f"  ❌  File selection failed: {e}")
+                        except BaseException as e:
+                            log(f"  ❌  File selection failed: {type(e).__name__}: {e}")
                             continue
 
                         log("  ⏳  Waiting for imported layer to appear…")
@@ -949,11 +954,12 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                             import_ok = True
                             break
                         except RuntimeError as e:
-                            log(f"  ❌  Import did not finish cleanly: {e}")
+                            log(f"  ❌  Import did not finish cleanly: {type(e).__name__}: {e}")
                             continue
 
                     if not import_ok:
                         log(f"  ❌  All import attempts failed for '{gpx_path.name}', skipping.")
+                        failed_maps.append((map_name, "map created but all import attempts failed — delete the map in My Maps and rerun upload manually"))
                         continue
 
                     # ── Step 8: Rename layer ───────────────────────────────
@@ -967,11 +973,9 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                                 layer_el = loc
                                 log(f"  🎯  Matched layer by '{candidate_text}'")
                                 break
-                        
                         if not layer_el:
                             log("  ℹ️  No exact text match; using first visible layer")
                             layer_el = page.locator(".pbTTYe-r4nke").first
-
                         layer_el.wait_for(state="visible", timeout=3_000)
                         layer_el.click(force=True)
                         page.wait_for_selector("#update-layer-name", timeout=8_000, state="visible")
@@ -981,8 +985,9 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                         page.click("#update-layer-name button[name='save']", force=True)
                         page.wait_for_selector("#update-layer-name", timeout=8_000, state="hidden")
                         log("  ✅  Layer renamed")
-                    except Exception as e:
-                        log(f"  ⚠️  Layer rename failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Layer rename failed: {type(e).__name__}: {e}")
+                        failed_maps.append((map_name, "layer rename failed — check and rename the layer manually in My Maps"))
 
                     # ── Step 9: Rename map ─────────────────────────────────
                     log(f"  🗺️   Renaming map to '{map_name}'…")
@@ -997,8 +1002,9 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                         save_btn.click(force=True)
                         page.wait_for_selector("#update-map", timeout=8_000, state="hidden")
                         log(f"  ✅  Map renamed to '{map_name}'")
-                    except Exception as e:
-                        log(f"  ⚠️  Map rename failed: {e}")
+                    except BaseException as e:
+                        log(f"  ⚠️  Map rename failed: {type(e).__name__}: {e}")
+                        failed_maps.append((map_name, "map title rename failed — check and rename the map title manually in My Maps"))
 
                     # ── Step 10: Save map screenshot ───────────────────────
                     log("  📸  Capturing route screenshot…")
@@ -1006,6 +1012,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                         _capture_map_screenshot(page, output_dir, map_name, log)
                     except BaseException as e:
                         log(f"  ⚠️  Screenshot capture failed: {type(e).__name__}: {e}")
+                        failed_maps.append((map_name, "map created and imported successfully but screenshot capture failed — check the map in My Maps and capture manually"))
 
                     # ── Step 10b: Reverse geocode start/end points ─────────
                     log("  🌍  Looking up start/end addresses…")
@@ -1015,6 +1022,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     except BaseException as e:
                         log(f"  ⚠️  Geo lookup failed: {type(e).__name__}: {e}")
                         start_pos, end_pos, city = "", "", ""
+                        failed_maps.append((map_name, "map created and imported successfully but reverse geocoding failed — delete the map and rerun upload manually to get full address data"))
+                        continue
 
                     # ── Step 11: Save share link ───────────────────────────
                     log("  🔗  Saving share link…")
@@ -1023,7 +1032,7 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                                          start_pos=start_pos, end_pos=end_pos, city=city)
                     except BaseException as e:
                         log(f"  ⚠️  Share link export failed: {type(e).__name__}: {e}")
-
+                        failed_maps.append((map_name, "map created and imported successfully but share link could not be saved to CSV — check the map in My Maps and copy the link manually"))
                     log(f"  ✅  Done: {map_name}")
 
                 log(f"\n🎉  All files processed! Check Google My Maps.")
@@ -1036,14 +1045,14 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                         log(f"⚠️  Failed to open links: {e}")
 
                 context.close()
-                done_callback(True)
+                done_callback(True, failed_maps)
         except BaseException as e:
             log(f"❌  Fatal error: {type(e).__name__}: {e}")
             try:
                 context.close()
             except Exception:
                 pass
-            done_callback(False)
+            done_callback(False, failed_maps)
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -1481,12 +1490,29 @@ class GpxTab(tk.Frame):
         )
         self._log("🧵  Thread started.")
 
-    def _on_done(self, success):
+    def _on_done(self, success, failed_maps=None):
         self._running = False
         self.after(0, lambda: self.go_btn.config(
             state="normal", text="▶  Upload to My Maps", bg=ACCENT))
-        msg = "✅  Upload complete!" if success else "⚠  Finished with errors — check log."
-        self.after(0, lambda: self.status_var.set(msg))
+        if failed_maps:
+            msg = "✅  Upload complete with errors — check log."
+            self.after(0, lambda: self.status_var.set(msg))
+            def _show_dialog():
+                from tkinter import messagebox
+                lines = "\n".join(f"  • {name}: {reason}" for name, reason in failed_maps)
+                footer = (
+                    "\n\nTo rerun upload for any map manually, go to the current run's output folder "
+                    "and select the corresponding GPX file(s) to upload into My Maps."
+                )
+                messagebox.showwarning(
+                    "Upload finished with errors",
+                    f"The following map(s) had issues:\n\n{lines}{footer}",
+                    parent=self
+                )
+            self.after(100, _show_dialog)
+        else:
+            msg = "✅  Upload complete!" if success else "⚠  Finished with errors — check log."
+            self.after(0, lambda: self.status_var.set(msg))
 
     def _log(self, msg):
         try:
