@@ -798,7 +798,7 @@ def _wait_for_imported_layer(page, gpx_path, log, timeout_ms=20_000):
 
 def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     share_export_format: str = "csv", open_links_after: bool = False,
-                    playwright_tracing: bool = False):
+                    playwright_tracing: bool = False,screen_w: int = 1920, screen_h: int = 1080):
     def _run():
         failed_maps = []  # list of (map_name, reason_string) tuples
         try:
@@ -828,11 +828,8 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
             share_output = _init_share_output_file(output_dir, share_export_format)
             log(f"💾  Output folder: {output_dir}")
             log(f"🔗  Share links file: {share_output.name}")
-            _tmp_root = tk.Tk()
-            _tmp_root.withdraw()
-            _screen_w = _tmp_root.winfo_screenwidth()
-            _screen_h = _tmp_root.winfo_screenheight()
-            _tmp_root.destroy()
+            _screen_w = screen_w
+            _screen_h = screen_h
             with sync_playwright() as p:
                 log("🔧  Playwright context started, launching Chromium...")
                 # Persistent context to keep you logged in to Google
@@ -1497,6 +1494,10 @@ class GpxTab(tk.Frame):
         self._log(f"💾  Output folder: {output_dir}")
         self._log(f"🧾  Share export format: {export_format.upper()}")
         self._log("🧵  Starting upload thread…")
+        # Read screen dimensions on the main thread — creating tk.Tk() on a
+        # worker thread corrupts Tcl's internal state and causes hard crashes.
+        screen_w = self.winfo_toplevel().winfo_screenwidth()
+        screen_h = self.winfo_toplevel().winfo_screenheight()
         open_links = getattr(self.winfo_toplevel(), "open_links_after", tk.BooleanVar(value=False)).get()
         playwright_tracing = getattr(self.winfo_toplevel(), "playwright_tracing", tk.BooleanVar(value=False)).get()
         upload_gpx_files(
@@ -1507,6 +1508,8 @@ class GpxTab(tk.Frame):
             share_export_format=export_format,
             open_links_after=open_links,
             playwright_tracing=playwright_tracing,
+            screen_w=screen_w,
+            screen_h=screen_h,
         )
         self._log("🧵  Thread started.")
 
