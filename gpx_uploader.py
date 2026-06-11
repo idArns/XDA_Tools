@@ -797,7 +797,8 @@ def _wait_for_imported_layer(page, gpx_path, log, timeout_ms=20_000):
 
 
 def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
-                    share_export_format: str = "csv", open_links_after: bool = False):
+                    share_export_format: str = "csv", open_links_after: bool = False,
+                    playwright_tracing: bool = False):
     def _run():
         failed_maps = []  # list of (map_name, reason_string) tuples
         try:
@@ -849,6 +850,11 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     pass
                 # launch_persistent_context creates a page automatically
                 page = context.pages[0] if context.pages else context.new_page()
+
+                if playwright_tracing:
+                    trace_path = output_dir / "playwright_trace.zip"
+                    context.tracing.start(snapshots=True, screenshots=False, sources=False)
+                    log(f"🔍  Playwright tracing enabled — trace will be saved to: {trace_path.name}")
 
                 # ── Step 1: Navigate to My Maps home and wait for sign-in ──
                 page.goto(MYMAPS_HOME, wait_until="domcontentloaded")
@@ -1044,10 +1050,22 @@ def upload_gpx_files(gpx_paths: list, output_dir: Path, log, done_callback,
                     except Exception as e:
                         log(f"⚠️  Failed to open links: {e}")
 
+                if playwright_tracing:
+                    try:
+                        context.tracing.stop(path=str(trace_path))
+                        log(f"🔍  Playwright trace saved: {trace_path.name}")
+                    except BaseException:
+                        pass
                 context.close()
                 done_callback(True, failed_maps)
         except BaseException as e:
             log(f"❌  Fatal error: {type(e).__name__}: {e}")
+            try:
+                if playwright_tracing:
+                    context.tracing.stop(path=str(trace_path))
+                    log(f"🔍  Playwright trace saved: {trace_path.name}")
+            except BaseException:
+                pass
             try:
                 context.close()
             except Exception:
@@ -1480,6 +1498,7 @@ class GpxTab(tk.Frame):
         self._log(f"🧾  Share export format: {export_format.upper()}")
         self._log("🧵  Starting upload thread…")
         open_links = getattr(self.winfo_toplevel(), "open_links_after", tk.BooleanVar(value=False)).get()
+        playwright_tracing = getattr(self.winfo_toplevel(), "playwright_tracing", tk.BooleanVar(value=False)).get()
         upload_gpx_files(
             gpx_paths,
             output_dir,
@@ -1487,6 +1506,7 @@ class GpxTab(tk.Frame):
             self._on_done,
             share_export_format=export_format,
             open_links_after=open_links,
+            playwright_tracing=playwright_tracing,
         )
         self._log("🧵  Thread started.")
 
@@ -1897,7 +1917,31 @@ class SettingsTab(tk.Frame):
             activebackground=CARD,
             activeforeground=TEXT,
         )
-        chk.pack(anchor="w", padx=16, pady=(0, 16))
+        chk.pack(anchor="w", padx=16, pady=(0, 8))
+
+        tracing_var = self.winfo_toplevel().playwright_tracing
+
+        tk.Label(
+            card,
+            text="Enable Playwright tracing (saves a trace.zip to the output folder for crash diagnostics)",
+            bg=CARD,
+            fg=MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=520,
+        ).pack(fill="x", padx=16, pady=(8, 2))
+
+        chk_trace = tk.Checkbutton(
+            card,
+            text="Enable Playwright tracing (diagnostic — leave off unless debugging a crash)",
+            variable=tracing_var,
+            bg=CARD,
+            fg=TEXT,
+            selectcolor=CARD,
+            activebackground=CARD,
+            activeforeground=TEXT,
+        )
+        chk_trace.pack(anchor="w", padx=16, pady=(0, 16))
 
 
 # ===========================================================================
@@ -1920,6 +1964,8 @@ class App(tk.Tk):
         f_tab  = tkfont.Font(family="Segoe UI", size=9, weight="bold")
         if not hasattr(self, "share_export_format"):
             self.share_export_format = tk.StringVar(value="csv")
+        if not hasattr(self, "playwright_tracing"):
+            self.playwright_tracing = tk.BooleanVar(value=False)
 
         hdr = tk.Frame(self, bg=BG, pady=12)
         hdr.pack(fill="x", padx=24)
