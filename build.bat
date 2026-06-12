@@ -51,8 +51,10 @@ pyinstaller ^
   --windowed ^
   --name "XDA_Tools" ^
   --noconfirm ^
+  --icon "xda_icon.ico" ^
   --add-data "%PW_PKG%;playwright" ^
   --add-data "%DND_DIR%;tkinterdnd2" ^
+  --add-data "xda_icon.ico;." ^
   --hidden-import tkinterdnd2 ^
   --hidden-import playwright ^
   --hidden-import playwright.sync_api ^

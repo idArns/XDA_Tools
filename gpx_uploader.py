@@ -341,6 +341,23 @@ def _safe_filename(value):
     return value or "untitled"
 
 
+def _apply_icon(root):
+    try:
+        import sys
+        candidates = [
+            Path(__file__).parent / "xda_icon.ico",
+            Path(sys.executable).parent / "_internal" / "xda_icon.ico",
+        ]
+        for p in candidates:
+            if p.exists():
+                root.iconbitmap(str(p))
+                return
+    except Exception:
+        pass
+    value = re.sub(r'[<>:"/\\|?*]+', "_", value).strip()
+    return value or "untitled"
+
+
 def _parse_gpx_endpoints(gpx_path: Path):
     """
     Extract the first and last (lat, lon) trackpoints from a GPX file.
@@ -1410,11 +1427,11 @@ class GpxTab(tk.Frame):
 
         if self._gpx_files:
             # Manual files — confirm immediately
-            names = [Path(p).stem for p in self._gpx_files]
+            names = [Path(p).stem for p in reversed(self._gpx_files)]
             if not self._confirm_files(names):
                 self.status_var.set("Upload cancelled.")
                 return
-            self._run_upload(list(self._gpx_files), output_dir, export_format)
+            self._run_upload(list(reversed(self._gpx_files)), output_dir, export_format)
         else:
             # Strava — fetch metadata first, confirm, then write GPX
             if not _strava_token_store.get("access_token"):
@@ -1958,6 +1975,7 @@ class App(tk.Tk):
         self.geometry("860x660")
         self.minsize(700, 520)
         self.configure(bg=BG)
+        _apply_icon(self)
         self._build()
 
     def _build(self):
@@ -2030,6 +2048,7 @@ def main():
                 self.geometry("860x660")
                 self.minsize(700, 520)
                 self.configure(bg=BG)
+                _apply_icon(self)
                 self._build()
 
         app = AppDnD()
