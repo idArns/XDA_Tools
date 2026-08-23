@@ -23,7 +23,7 @@ from tkinter import font as tkfont, filedialog, ttk
 from tkinter import messagebox
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 # ---------------------------------------------------------------------------
 # Playwright import guard
@@ -1129,10 +1129,21 @@ def _parse_entry_line(line):
     return sort_key, raw_ts, value
 
 
-def run_bucketer(bucket_ts_str, entry_files):
+def _roll_timestamp(raw_ts, hours):
+    """Roll a 'mm/dd-hh:mm:ss' timestamp ahead by `hours`, wrapping date correctly."""
+    date_part, time_part = raw_ts.split("-", 1)
+    mo, dy = (int(x) for x in date_part.split("/"))
+    h, m, s = (int(x) for x in time_part.split(":"))
+    dt = datetime(2000, mo, dy, h, m, s) + timedelta(hours=hours)
+    return f"{dt.month:02d}/{dt.day:02d}-{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}"
+
+
+def run_bucketer(bucket_ts_str, entry_text, roll_hours=None):
     """
     bucket_ts_str : list of 'hh-mm-ss' strings (chronological order)
-    entry_files   : list of Path objects
+    entry_text    : raw text content (pasted or loaded from file) containing entry lines
+    roll_hours    : if set, roll every entry timestamp ahead by this many hours
+                    (date part wraps correctly)
     Returns formatted output string.
 
     Bucket boundaries are time-of-day only (hh-mm-ss).
@@ -1150,17 +1161,12 @@ def run_bucketer(bucket_ts_str, entry_files):
             day_off += 86400
         adj_bucket_secs.append(b + day_off)
 
-    # Read and merge all entry files
+    # Parse entry lines from the provided text
     raw_entries = []
-    for fp in entry_files:
-        try:
-            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
-            continue
-        for line in lines:
-            parsed = _parse_entry_line(line)
-            if parsed:
-                raw_entries.append(parsed)
+    for line in entry_text.splitlines():
+        parsed = _parse_entry_line(line)
+        if parsed:
+            raw_entries.append(parsed)
 
     # Deduplicate (same raw_ts + value)
     seen = set()
@@ -1170,6 +1176,16 @@ def run_bucketer(bucket_ts_str, entry_files):
         if key not in seen:
             seen.add(key)
             entries.append((sort_key, raw_ts, value))
+
+    # Roll timestamps ahead if requested — happens after dedup, before sort/bucketing.
+    if roll_hours:
+        rolled = []
+        for _sort_key, raw_ts, value in entries:
+            new_raw_ts = _roll_timestamp(raw_ts, roll_hours)
+            new_date_part, new_time_part = new_raw_ts.split("-", 1)
+            new_sort_key = _parse_datetime_secs(new_date_part, new_time_part)
+            rolled.append((new_sort_key, new_raw_ts, value))
+        entries = rolled
 
     # Sort by full date+time
     entries.sort(key=lambda x: x[0])
@@ -1290,35 +1306,27 @@ class GpxTab(tk.Frame):
         date_inner = tk.Frame(self, bg=BG)
         date_inner.pack(fill="x", padx=20, pady=(2, 8))
 
-        # Setup custom style for Combobox to match dark theme
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("TCombobox", fieldbackground=CARD, background=CARD, foreground=TEXT, arrowcolor=TEXT)
-        style.map("TCombobox", fieldbackground=[("readonly", CARD)], foreground=[("readonly", TEXT)], background=[("readonly", CARD)])
-        self.option_add("*TCombobox*Listbox.background", CARD)
-        self.option_add("*TCombobox*Listbox.foreground", TEXT)
-        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-        self.option_add("*TCombobox*Listbox.selectForeground", "white")
-
-        def _combo_entry(parent, var, values, w):
-            cb = ttk.Combobox(parent, textvariable=var, values=values, width=w, state="readonly")
-            cb.pack(side="left", padx=2)
-            return cb
+        def _option_entry(parent, var, values, w):
+            om = tk.OptionMenu(parent, var, *values)
+            om.config(bg=CARD, fg=TEXT, highlightthickness=0, width=w)
+            om["menu"].config(bg=CARD, fg=TEXT)
+            om.pack(side="left", padx=2)
+            return om
 
         tk.Label(date_inner, text="Year:", bg=BG, fg=MUTED,
                  font=tkfont.Font(family="Segoe UI", size=9)).pack(side="left")
         years = [str(y) for y in range(today.year, today.year - 15, -1)]
-        _combo_entry(date_inner, self._date_y, years, 6)
+        _option_entry(date_inner, self._date_y, years, 5)
 
         tk.Label(date_inner, text="Month:", bg=BG, fg=MUTED,
                  font=tkfont.Font(family="Segoe UI", size=9)).pack(side="left", padx=(6, 0))
         months = [f"{m:02d}" for m in range(1, 13)]
-        _combo_entry(date_inner, self._date_m, months, 4)
+        _option_entry(date_inner, self._date_m, months, 3)
 
         tk.Label(date_inner, text="Day:", bg=BG, fg=MUTED,
                  font=tkfont.Font(family="Segoe UI", size=9)).pack(side="left", padx=(6, 0))
         days = [f"{d:02d}" for d in range(1, 32)]
-        _combo_entry(date_inner, self._date_d, days, 4)
+        _option_entry(date_inner, self._date_d, days, 3)
 
         tk.Label(date_inner, text="→ yyyymmdd filter for Strava activity names", bg=BG, fg=MUTED,
                  font=tkfont.Font(family="Segoe UI", size=8)).pack(side="left", padx=(10, 0))
@@ -1576,7 +1584,6 @@ class GpxTab(tk.Frame):
 class BucketTab(tk.Frame):
     def __init__(self, master):
         super().__init__(master, bg=BG)
-        self._entry_files = []
         self._build()
 
     def _build(self):
@@ -1594,18 +1601,49 @@ class BucketTab(tk.Frame):
         ts_frame, self.ts_text = _scrolled_text(left, height=10, fg=ACCENT2)
         ts_frame.pack(fill="x", pady=(2, 12))
 
-        # Entry files
+        # Entry text
         ef_hdr = tk.Frame(left, bg=BG)
         ef_hdr.pack(fill="x")
         _small_label(ef_hdr, "ENTRY FILES  (.txt)").pack(side="left")
-        _styled_button(ef_hdr, "Add files…", self._add_entry_files).pack(side="right")
 
-        ef_frame, self.entry_list = _make_listbox(left)
+        self.roll_enabled = tk.BooleanVar(value=False)
+        roll_chk = tk.Checkbutton(
+            ef_hdr,
+            text="Roll ahead",
+            variable=self.roll_enabled,
+            bg=BG,
+            fg=TEXT,
+            selectcolor=CARD,
+            activebackground=BG,
+            activeforeground=TEXT,
+        )
+        roll_chk.pack(side="right", padx=(0, 8))
+
+        UTC_OFFSETS = [
+            "UTC-12:00", "UTC-11:00", "UTC-10:00", "UTC-09:30", "UTC-09:00",
+            "UTC-08:00", "UTC-07:00", "UTC-06:00", "UTC-05:00", "UTC-04:00",
+            "UTC-03:30", "UTC-03:00", "UTC-02:00", "UTC-01:00", "UTC+00:00",
+            "UTC+01:00", "UTC+02:00", "UTC+03:00", "UTC+03:30", "UTC+04:00",
+            "UTC+04:30", "UTC+05:00", "UTC+05:30", "UTC+05:45", "UTC+06:00",
+            "UTC+06:30", "UTC+07:00", "UTC+08:00", "UTC+08:45", "UTC+09:00",
+            "UTC+09:30", "UTC+10:00", "UTC+10:30", "UTC+11:00", "UTC+12:00",
+            "UTC+12:45", "UTC+13:00", "UTC+14:00",
+        ]
+        self.roll_offset = tk.StringVar(value="UTC+06:00")
+        roll_dropdown = tk.OptionMenu(ef_hdr, self.roll_offset, *UTC_OFFSETS)
+        roll_dropdown.config(bg=CARD, fg=TEXT, highlightthickness=0, width=9)
+        roll_dropdown["menu"].config(bg=CARD, fg=TEXT)
+        roll_dropdown.pack(side="right", padx=(0, 4))
+
+        _styled_button(ef_hdr, "Load from file…", self._load_entry_files,
+                       color=CARD, fg=MUTED).pack(side="right", padx=(0, 8))
+
+        ef_frame, self.entry_text = _scrolled_text(left, height=14, fg=ACCENT2)
         ef_frame.pack(fill="both", expand=True, pady=(2, 8))
 
         clr_row = tk.Frame(left, bg=BG)
         clr_row.pack(fill="x")
-        _styled_button(clr_row, "Clear files", self._clear_entry_files,
+        _styled_button(clr_row, "Clear entries", self._clear_entry_text,
                        color=CARD, fg=MUTED).pack(side="left")
         self.run_btn = _styled_button(clr_row, "▶  Run bucketer", self._run)
         self.run_btn.pack(side="right")
@@ -1625,7 +1663,7 @@ class BucketTab(tk.Frame):
         out_frame, self.out_text = _scrolled_text(right, height=30, fg=TEXT, state="disabled")
         out_frame.pack(fill="both", expand=True, pady=(2, 0))
 
-        self.status_var = tk.StringVar(value="Add timestamps and entry files, then click Run.")
+        self.status_var = tk.StringVar(value="Add timestamps and entries, then click Run.")
         tk.Label(right, textvariable=self.status_var,
                  font=tkfont.Font(family="Segoe UI", size=8),
                  bg=BG, fg=MUTED, anchor="w").pack(fill="x", pady=(4, 0))
@@ -1646,27 +1684,33 @@ class BucketTab(tk.Frame):
         self.ts_text.insert("end", content.strip())
         self.status_var.set(f"Timestamps loaded from {Path(path).name}")
 
-    def _add_entry_files(self):
+    def _load_entry_files(self):
         paths = filedialog.askopenfilenames(
-            title="Select entry .txt files",
+            title="Select entry .txt file(s)",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
-        existing = set(self._entry_files)
-        new = [Path(p) for p in paths if Path(p) not in existing]
-        self._entry_files.extend(new)
-        self._refresh_entry_list()
-        if new:
-            self.status_var.set(f"{len(self._entry_files)} entry file(s) loaded.")
+        if not paths:
+            return
+        loaded = 0
+        for p in paths:
+            try:
+                content = Path(p).read_text(encoding="utf-8", errors="replace").strip()
+            except Exception as e:
+                self.status_var.set(f"⚠  Could not read {Path(p).name}: {e}")
+                continue
+            if content:
+                existing = self.entry_text.get("1.0", "end").strip()
+                if existing:
+                    self.entry_text.insert("end", "\n" + content)
+                else:
+                    self.entry_text.insert("end", content)
+                loaded += 1
+        if loaded:
+            self.status_var.set(f"{loaded} file(s) loaded into entries.")
 
-    def _clear_entry_files(self):
-        self._entry_files.clear()
-        self._refresh_entry_list()
-        self.status_var.set("Entry file list cleared.")
-
-    def _refresh_entry_list(self):
-        self.entry_list.delete(0, "end")
-        for p in self._entry_files:
-            self.entry_list.insert("end", f"  {p.name}")
+    def _clear_entry_text(self):
+        self.entry_text.delete("1.0", "end")
+        self.status_var.set("Entry text cleared.")
 
     def _run(self):
         raw_ts = self.ts_text.get("1.0", "end").strip()
@@ -1679,16 +1723,26 @@ class BucketTab(tk.Frame):
         if bad:
             self.status_var.set(f"⚠  Bad timestamp format: {bad[0]}  (expected hh-mm-ss)")
             return
-        if not self._entry_files:
-            self.status_var.set("⚠  No entry files loaded.")
+        entry_text = self.entry_text.get("1.0", "end").strip()
+        if not entry_text:
+            self.status_var.set("⚠  No entries entered.")
             return
+
+        roll_hours = None
+        if self.roll_enabled.get():
+            offset_str = self.roll_offset.get()  # e.g. "UTC+05:30" or "UTC-09:30"
+            m = re.match(r'UTC([+-])(\d{2}):(\d{2})', offset_str)
+            if m:
+                sign = 1 if m.group(1) == "+" else -1
+                hh, mm = int(m.group(2)), int(m.group(3))
+                roll_hours = sign * (hh + mm / 60)
 
         self.run_btn.config(state="disabled", text="⏳  Running…", bg=MUTED)
         self.status_var.set("Processing…")
 
         def _worker():
             try:
-                result = run_bucketer(bucket_lines, self._entry_files)
+                result = run_bucketer(bucket_lines, entry_text, roll_hours=roll_hours)
                 self.after(0, lambda: self._show_output(result))
             except Exception as e:
                 self.after(0, lambda: self.status_var.set(f"❌  Error: {e}"))
