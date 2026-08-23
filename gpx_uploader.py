@@ -717,7 +717,62 @@ def _attach_file_from_import_dialog(page, file_path, log, timeout_ms=20_000):
     visible "Tallozas / Browse" button is not always the most reliable target.
     Prefer setting the hidden file input directly, then fall back to clicking
     a visible chooser button and handling the file chooser event.
+
+    Google My Maps now shows a source-picker menu (Google Drive / Albums /
+    Upload) before the classic Tallózás/Browse dialog appears. All three
+    options share the same jsname, so they can only be disambiguated by
+    their visible text — "Feltöltés" (Hungarian) or "Upload" (English).
+    This step clicks that option first; if it's not present the rest of
+    the function proceeds exactly as before.
     """
+    upload_option_selectors = (
+        "div[role='option'][name='2']:has-text('Feltöltés')",
+        "div[role='option'][name='2']:has-text('Upload')",
+        "div[role='option']:has-text('Feltöltés')",
+        "div[role='option']:has-text('Upload')",
+    )
+    upload_click_ok = False
+    upload_last_error = None
+    upload_deadline = time.time() + 3  # short poll window, menu render can lag slightly
+    while time.time() < upload_deadline and not upload_click_ok:
+        for frame in page.frames:
+            for selector in upload_option_selectors:
+                try:
+                    opt = frame.locator(selector).first
+                    if opt.count() > 0 and opt.is_visible():
+                        opt.click(force=True)
+                        upload_click_ok = True
+                        break
+                except BaseException as e:
+                    upload_last_error = e
+            if upload_click_ok:
+                break
+        if not upload_click_ok:
+            time.sleep(0.25)
+
+    if upload_click_ok:
+        # Verify the click actually did something rather than assuming success —
+        # either the option menu closes or the classic Tallózás/Browse button appears.
+        verified = False
+        try:
+            for frame in page.frames:
+                btn = frame.locator("button:has-text('Tallózás'), button:has-text('Browse')").first
+                if btn.count() > 0:
+                    btn.wait_for(state="visible", timeout=500)
+                    verified = True
+                    break
+        except BaseException:
+            pass
+        if verified:
+            log("  📤  Clicked 'Upload' option in import source menu — confirmed")
+        else:
+            log("  📤  Clicked 'Upload' option in import source menu — unconfirmed, proceeding anyway")
+        time.sleep(0.5)
+    elif upload_last_error:
+        log(f"  ℹ️  Upload option found but click failed ({upload_last_error}); proceeding without it")
+    else:
+        log("  ℹ️  Upload source menu not present; proceeding directly")
+
     deadline = time.time() + (timeout_ms / 1000)
     last_error = None
 
