@@ -11,7 +11,9 @@ import os
 import re
 import secrets
 import socket
+import ssl
 import sys
+import traceback
 import time
 import threading
 import tkinter as tk
@@ -24,6 +26,14 @@ from tkinter import messagebox
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime, date, timedelta
+
+# Use certifi's CA bundle for all HTTPS (urllib) calls. python.org builds on macOS
+# ship without root certificates, which makes the Strava token exchange fail.
+try:
+    import certifi
+    ssl._create_default_https_context = lambda *a, **k: ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Playwright import guard
@@ -68,6 +78,16 @@ STRAVA_CLIENT_SEC = "YOUR_CLIENT_SECRET"  # replace or load from config
 _strava_token_store: dict = {}   # {access_token, refresh_token, expires_at}
 
 _config_path = Path.home() / ".gpxtools_strava.json"
+_log_path    = Path.home() / ".gpxtools_strava.log"
+
+
+def _strava_log(msg):
+    """Append to ~/.gpxtools_strava.log (the windowed app has no console)."""
+    try:
+        with open(_log_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}\n")
+    except Exception:
+        pass
 
 
 def _strava_load_config():
@@ -119,14 +139,23 @@ def _strava_refresh_token_if_needed():
         _strava_save_config()
         return True
     except Exception as e:
-        print("Token refresh failed:", e)
+        _strava_log(f"Token refresh failed: {e!r}")
+        return False
 
 
-def _strava_oauth_flow(log=print):
+def _strava_oauth_flow(log=None):
     """
     Open browser for Strava OAuth, spin up a local server for the redirect,
     exchange the code for tokens, and store them.  Returns True on success.
     """
+    def _log(msg):
+        _strava_log(msg.strip())
+        if log:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
     code_holder = {}
     state = secrets.token_hex(8)
 
@@ -142,11 +171,14 @@ def _strava_oauth_flow(log=print):
                 self.end_headers()
                 self.wfile.write(b"<h2>Connected to Strava! You can close this tab.</h2>")
             else:
-                self.send_response(400)
+                # favicon / speculative requests / Strava error redirect
+                if "error" in params:
+                    code_holder["error"] = params["error"][0]
+                self.send_response(404)
                 self.end_headers()
 
     server = HTTPServer(("localhost", 18642), _Handler)
-    server.timeout = 120
+    server.timeout = 5
 
     auth_params = urllib.parse.urlencode({
         "client_id":     STRAVA_CLIENT_ID,
@@ -157,15 +189,18 @@ def _strava_oauth_flow(log=print):
         "state":         state,
     })
     url = f"{STRAVA_AUTH_URL}?{auth_params}"
-    log(f"  🌐  Opening browser for Strava login…")
+    _log("Opening browser for Strava login...")
     webbrowser.open(url)
 
-    server.handle_request()   # blocks until one request comes in
+    deadline = time.time() + 180
+    while "code" not in code_holder and "error" not in code_holder and time.time() < deadline:
+        server.handle_request()   # returns after a request or 5 s
     server.server_close()
 
     if "code" not in code_holder:
-        log("  ❌  Strava OAuth: no code received.")
+        _log(f"Strava OAuth: no code received ({code_holder.get('error', 'timeout')}).")
         return False
+    _log("Authorization code received, exchanging for tokens...")
 
     # Exchange code for tokens
     try:
@@ -183,10 +218,16 @@ def _strava_oauth_flow(log=print):
         _strava_token_store["expires_at"]    = data["expires_at"]
         _strava_token_store["athlete_name"]  = data.get("athlete", {}).get("firstname", "")
         _strava_save_config()
-        log(f"  ✅  Strava connected: {_strava_token_store.get('athlete_name', 'unknown')}")
+        _log(f"Strava connected: {_strava_token_store.get('athlete_name', 'unknown')}")
         return True
     except Exception as e:
-        log(f"  ❌  Strava token exchange failed: {e}")
+        detail = ""
+        if hasattr(e, "read"):
+            try:
+                detail = " | " + e.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+        _log(f"Strava token exchange failed: {e!r}{detail}\n{traceback.format_exc()}")
         return False
 
 
@@ -1893,10 +1934,14 @@ class SettingsTab(tk.Frame):
         if not STRAVA_CLIENT_ID or not STRAVA_CLIENT_SEC:
             return
         def worker():
-            ok = _strava_oauth_flow()
-            if ok:
-                self._save_strava_creds()
-            self.after(0, self._refresh_strava_status)
+            ok = False
+            try:
+                ok = _strava_oauth_flow()
+            except Exception:
+                _strava_log("OAuth flow crashed:\n" + traceback.format_exc())
+            finally:
+                # Tk calls must happen on the main thread
+                self.after(0, self._save_strava_creds if ok else self._refresh_strava_status)
         threading.Thread(target=worker, daemon=True).start()
 
     def _disconnect_strava(self):
