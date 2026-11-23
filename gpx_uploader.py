@@ -367,7 +367,11 @@ def _app_base_dir():
 
 
 def _make_run_output_dir():
-    base_out = _app_base_dir() / "out"
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        # Inside the .app bundle output is hard to reach and breaks code signing
+        base_out = Path.home() / "Documents" / "XDA_Tools" / "out"
+    else:
+        base_out = _app_base_dir() / "out"
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = base_out / stamp
     suffix = 1
